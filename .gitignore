@@ -1,0 +1,38 @@
+# 실제 견본 데이터는 레포 밖에 두세요. 아래는 안전장치일 뿐입니다.
+real/
+samples/
+견본/
+storage/
+*.local.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Node
+node_modules/
+.vite/
+coverage/
+
+# DB · 로그
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.log
+
+# OS · 편집기
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.env
