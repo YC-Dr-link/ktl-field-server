@@ -10,8 +10,12 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+src/
 *.egg-info/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 .mypy_cache/
 .ruff_cache/
 build/
@@ -30,9 +34,19 @@ coverage/
 *.db-shm
 *.log
 
-# OS · 편집기
+# OS · 편집기 · AI 작업 지시서
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 .env
+.env.*
+*.tmp
+*.bak
+*.swp
+GEMINI.md
+Gemini.md
+CLAUDE.md
+.claude/
+.cursor/
+.gemini/
