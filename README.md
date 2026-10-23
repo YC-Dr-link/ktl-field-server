@@ -37,4 +37,8 @@ pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-sele
 
 ## 실행
 
-(뼈대 PR에서 채운다)
+```bash
+pip install -e ".[dev]"
+alembic upgrade head
+uvicorn app.main:app --host 0.0.0.0 --port 8765
+```

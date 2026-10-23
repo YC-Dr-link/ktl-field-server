@@ -5,8 +5,25 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from ktl_contract import Reader, Selector
-from ktl_contract.fakes import FakeReader, FakeSelector
+
+try:
+    from ktl_contract import Reader, Selector
+    from ktl_contract.fakes import FakeReader, FakeSelector
+except ModuleNotFoundError:  # pragma: no cover - ktl-contract 미설치 클린 환경 폴백
+    Reader = Any  # type: ignore[misc,assignment]
+    Selector = Any  # type: ignore[misc,assignment]
+
+    class FakeReader:  # type: ignore[no-redef]
+        """ktl-contract 미설치 환경을 위한 최소 가짜 Reader 폴백."""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class FakeSelector:  # type: ignore[no-redef]
+        """ktl-contract 미설치 환경을 위한 최소 가짜 Selector 폴백."""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
 
 
 def load_categories(yaml_path: Path | None = None) -> dict[str, Any]:

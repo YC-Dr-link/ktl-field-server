@@ -109,6 +109,7 @@ def get_db() -> Generator[Session, None, None]:
 
 
 __all__ = [
+    "BASE_DIR",
     "Base",
     "LOOPBACK_HOSTS",
     "ServerSettings",
