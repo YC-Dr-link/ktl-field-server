@@ -24,7 +24,6 @@ def upgrade() -> None:
         sa.Column("value", sa.String(length=512), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("key"),
-        if_not_exists=True,
     )
 
 

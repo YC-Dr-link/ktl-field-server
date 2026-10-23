@@ -14,7 +14,7 @@ from starlette.responses import Response
 import uvicorn
 
 from app.api import admin_api_router, mobile_api_router
-from app.models import Base, LOOPBACK_HOSTS, ServerSettings, engine, load_settings
+from app.models import LOOPBACK_HOSTS, ServerSettings, load_settings
 from app.services import ensure_storage_dirs
 
 
@@ -59,10 +59,9 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
 
 @asynccontextmanager
 async def _mobile_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """서버 시작 시 DB/보관소를 초기화하고, 필요 시 관리 API(127.0.0.1:8766)를 함께 기동한다."""
+    """서버 시작 시 보관소를 초기화하고, 필요 시 관리 API(127.0.0.1:8766)를 함께 기동한다."""
     cfg = load_settings()
     ensure_storage_dirs(cfg.storage_dir)
-    Base.metadata.create_all(bind=engine)
 
     admin_server: uvicorn.Server | None = None
     admin_task: asyncio.Task[None] | None = None
@@ -113,7 +112,6 @@ async def serve_both(settings: ServerSettings | None = None) -> None:
     cfg = settings or load_settings()
     os.environ["KTL_ADMIN_SIDECAR"] = "0"
     ensure_storage_dirs(cfg.storage_dir)
-    Base.metadata.create_all(bind=engine)
 
     mobile_server = uvicorn.Server(uvicorn.Config(mobile_app, host=cfg.mobile_host, port=cfg.mobile_port))
     admin_server = uvicorn.Server(uvicorn.Config(admin_app, host=cfg.admin_host, port=cfg.admin_port))
