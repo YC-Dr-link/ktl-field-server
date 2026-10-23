@@ -1,6 +1,7 @@
 name: data-guard
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened]
   push:
     branches: [main]
 permissions:
@@ -13,4 +14,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python .github/scripts/data_guard.py
+      - name: 실제 데이터가 들어오지 않았는지
+        run: python .github/scripts/data_guard.py
+      - name: PR이 이슈와 연결됐는지 (Closes #번호 또는 no-issue)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python .github/scripts/pr_link.py
