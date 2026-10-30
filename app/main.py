@@ -14,7 +14,8 @@ from starlette.responses import Response
 import uvicorn
 
 from app.api import admin_api_router, mobile_api_router
-from app.models import LOOPBACK_HOSTS, ServerSettings, load_settings
+from app.api.errors import register_error_handlers
+from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
 from app.services import ensure_storage_dirs
 
 
@@ -44,6 +45,12 @@ class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _configure_state(app: FastAPI, cfg: ServerSettings) -> None:
+    """라우터가 의존성으로 꺼내 쓰는 앱별 설정·DB 세션 팩토리를 둔다."""
+    app.state.settings = cfg
+    app.state.session_factory = create_session_factory(cfg.database_url)
+
+
 def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다."""
     cfg = settings or load_settings()
@@ -53,6 +60,8 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
         docs_url="/docs",
         openapi_url="/openapi.json",
     )
+    _configure_state(admin, cfg)
+    register_error_handlers(admin)
     admin.add_middleware(LoopbackOnlyMiddleware)
     admin.include_router(admin_api_router)
 
@@ -98,6 +107,8 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=_lifespan,
     )
+    _configure_state(mobile, cfg)
+    register_error_handlers(mobile)
     mobile.include_router(mobile_api_router)
 
     mobile_static = cfg.static_dir / "mobile"

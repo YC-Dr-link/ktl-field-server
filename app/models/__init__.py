@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from fastapi import Request
 from sqlalchemy import DateTime, Engine, String, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -52,6 +53,14 @@ def load_settings() -> ServerSettings:
 def local_now() -> datetime:
     """노트북 로컬 타임존 오프셋이 포함된 현재 시각을 반환한다."""
     return datetime.now(timezone.utc).astimezone()
+
+
+def to_iso(dt: datetime) -> str:
+    """ISO 8601 + 로컬 오프셋 문자열로 바꾼다 (`2026-10-29T14:03:11+09:00`).
+
+    SQLite는 오프셋 없이 로컬 벽시계 시각을 저장하므로, 읽어 온 naive 값은 로컬 시각으로 해석한다.
+    """
+    return dt.astimezone().isoformat(timespec="seconds")
 
 
 class Base(DeclarativeBase):
@@ -99,9 +108,20 @@ engine: Engine = create_db_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
 
 
-def get_db() -> Generator[Session, None, None]:
-    """요청 단위 데이터베이스 세션을 제공하는 제네레이터."""
-    db = SessionLocal()
+def create_session_factory(database_url: str) -> sessionmaker[Session]:
+    """앱별 설정(database_url)에 묶인 세션 팩토리를 만든다."""
+    return sessionmaker(
+        bind=create_db_engine(database_url), autoflush=False, autocommit=False, expire_on_commit=False, class_=Session
+    )
+
+
+def get_db(request: Request) -> Generator[Session, None, None]:
+    """요청 단위 데이터베이스 세션을 제공하는 제네레이터.
+
+    앱 생성 시 `app.state.session_factory`에 둔 팩토리를 쓴다 (테스트·다른 DB 설정이 전역 엔진에 섞이지 않게).
+    """
+    factory: sessionmaker[Session] = getattr(request.app.state, "session_factory", SessionLocal)
+    db = factory()
     try:
         yield db
     finally:
@@ -116,8 +136,10 @@ __all__ = [
     "SessionLocal",
     "SystemSetting",
     "create_db_engine",
+    "create_session_factory",
     "engine",
     "get_db",
     "load_settings",
     "local_now",
+    "to_iso",
 ]
