@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.auth import ClientOut
+from app.api.auth import ClientOut, TesterOut
 from app.api.errors import not_found
 from app.models import get_db, to_iso
-from app.models.auth import Client
+from app.models.auth import Client, Tester
 from app.services import auth as auth_service
 
 router = APIRouter(tags=["admin"])
@@ -23,6 +23,22 @@ class PairCodeOut(BaseModel):
 
 class ClientList(BaseModel):
     items: list[ClientOut]
+
+
+class AdminTesterList(BaseModel):
+    items: list[TesterOut]
+
+
+class TesterCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    pin: str = Field(pattern=r"^\d{4,6}$")
+
+
+class TesterPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    pin: str | None = Field(default=None, pattern=r"^\d{4,6}$")
+    unlock: bool | None = None
+    active: bool | None = None
 
 
 @router.get("/health", summary="관리 API 상태 확인")
@@ -52,3 +68,38 @@ def revoke_client(client_id: str, db: Session = Depends(get_db)) -> Response:
         raise not_found("단말을 찾을 수 없습니다.")
     auth_service.revoke_client(db, client)
     return Response(status_code=204)
+
+
+@router.get("/testers", response_model=AdminTesterList, summary="시험자 목록 (잠금·활성 포함)")
+def list_testers(db: Session = Depends(get_db)) -> AdminTesterList:
+    rows = db.scalars(select(Tester).order_by(Tester.id))
+    return AdminTesterList(items=[TesterOut.of(row, full=True) for row in rows])
+
+
+@router.post("/testers", status_code=201, response_model=TesterOut, summary="시험자 추가")
+def create_tester(body: TesterCreate, db: Session = Depends(get_db)) -> TesterOut:
+    tester = Tester(name=body.name, pin_hash=auth_service.hash_pin(body.pin), failed_count=0, active=True)
+    db.add(tester)
+    db.commit()
+    return TesterOut.of(tester, full=True)
+
+
+@router.patch("/testers/{tester_id}", response_model=TesterOut, summary="시험자 수정 (이름, PIN 재설정, 잠금 해제, 비활성)")
+def update_tester(tester_id: str, body: TesterPatch, db: Session = Depends(get_db)) -> TesterOut:
+    pk = auth_service.parse_id(tester_id, "ts")
+    tester = db.get(Tester, pk) if pk is not None else None
+    if tester is None:
+        raise not_found("시험자를 찾을 수 없습니다.")
+    if body.name is not None:
+        tester.name = body.name
+    if body.pin is not None:
+        tester.pin_hash = auth_service.hash_pin(body.pin)
+    if body.unlock or body.pin is not None:  # PIN을 새로 정하면 잠금도 푼다
+        tester.failed_count = 0
+        tester.locked_until = None
+    if body.active is not None:
+        tester.active = body.active
+    if body.pin is not None or body.active is False:  # 다시 활성화해도 예전 로그인은 살아나지 않게
+        auth_service.end_tester_sessions(db, tester)
+    db.commit()
+    return TesterOut.of(tester, full=True)
