@@ -68,3 +68,16 @@ def parallel() -> Callable[[Callable[[], int], int], list[int]]:
             return sorted(pool.map(lambda _: fn(), range(n)))
 
     return run
+
+
+@pytest.fixture()
+def add_tester(clients: tuple[TestClient, TestClient]) -> Callable[..., str]:
+    """관리 API로 시험자를 추가하고 ID(`ts_N`)를 돌려준다."""
+    _, admin = clients
+
+    def do_add(name: str = "시험자B", pin: str = "1234") -> str:
+        res = admin.post("/api/admin/v1/testers", json={"name": name, "pin": pin})
+        assert res.status_code == 201
+        return res.json()["id"]
+
+    return do_add
