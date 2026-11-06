@@ -36,13 +36,18 @@ CRASH_MESSAGE = "판독 모듈 프로세스가 비정상 종료했습니다"
 
 @dataclass(frozen=True)
 class ReadJob:
-    """사진 1장 판독 작업. reader가 None이면(`reader: none`) 판독 없이 바로 done."""
+    """사진 1장 판독 작업. reader가 None이면(`reader: none`) 판독 없이 바로 done.
+
+    case_id · unit_index는 판독에 쓰지 않고 SSE `photo.status` 알림(02 §2.4)에만 실어 보낸다.
+    """
 
     photo_id: str
     image_path: str
     item_key: str
     reader: str | None
     expected_keys: tuple[str, ...] = ()
+    case_id: str | None = None
+    unit_index: int | None = None
 
 
 @dataclass

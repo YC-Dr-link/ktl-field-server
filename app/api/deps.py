@@ -8,10 +8,16 @@ from fastapi import Request
 
 from app.models import ServerSettings
 from app.modules import find_category
+from app.services.events import EventBroker
 
 
 def get_settings(request: Request) -> ServerSettings:
     return request.app.state.settings
+
+
+def get_event_broker(request: Request) -> EventBroker:
+    """SSE 알림 배달부 — 휴대폰 앱과 관리 앱이 같은 것을 공유한다 (app/main.py)."""
+    return request.app.state.event_broker
 
 
 def is_phone_app(request: Request) -> bool:

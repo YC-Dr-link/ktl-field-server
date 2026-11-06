@@ -6,11 +6,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_actor, get_category_lookup, is_phone_app
+from app.api.deps import get_actor, get_category_lookup, get_event_broker, is_phone_app
 from app.api.schemas import Case, CaseCreate, CaseList
 from app.models import get_db
 from app.services import cases as case_service
 from app.services.cases import CategoryLookup
+from app.services.events import CASE_UPDATED, EventBroker
 
 router = APIRouter(tags=["cases"])
 
@@ -35,8 +36,11 @@ def create_case(
     lookup: CategoryLookup = Depends(get_category_lookup),
     actor: str = Depends(get_actor),
     phone_only: bool = Depends(is_phone_app),
+    events: EventBroker = Depends(get_event_broker),
 ) -> Case:
-    return case_service.create_case(db, body, lookup(body.category), actor, phone_only=phone_only)
+    case = case_service.create_case(db, body, lookup(body.category), actor, phone_only=phone_only)
+    events.publish(CASE_UPDATED, {"case_id": case.id})
+    return case
 
 
 @router.get("/cases/{case_id}", response_model=Case, summary="접수 건 상세 (기기별·항목별 상태)")

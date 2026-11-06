@@ -19,9 +19,12 @@ from app.api.errors import register_error_handlers
 from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
 from app.modules import load_categories, reader_names
 from app.services import ensure_storage_dirs
+from app.services.events import EventBroker, install_uvicorn_exit_hook, read_event_listener
 from app.worker import ReadQueue
 
 logger = logging.getLogger(__name__)
+# 종료 신호 없이 should_exit만 세운 경우에도 열린 SSE가 종료를 무한정 붙잡지 않게 하는 상한
+SHUTDOWN_GRACE_SECONDS = 5
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -50,8 +53,12 @@ class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def _configure_state(app: FastAPI, cfg: ServerSettings, *, default_actor: str, phone_only: bool) -> None:
-    """라우터가 의존성으로 꺼내 쓰는 앱별 설정·DB 세션 팩토리를 둔다."""
+def _configure_state(
+    app: FastAPI, cfg: ServerSettings, *, default_actor: str, phone_only: bool, events: EventBroker | None
+) -> None:
+    """라우터가 의존성으로 꺼내 쓰는 앱별 설정·DB 세션 팩토리·SSE 알림 배달부를 둔다."""
+    install_uvicorn_exit_hook()
+    app.state.event_broker = events or EventBroker()
     app.state.settings = cfg
     app.state.session_factory = create_session_factory(cfg.database_url)
     app.state.default_actor = default_actor
@@ -68,8 +75,10 @@ def create_read_queue() -> ReadQueue:
     return ReadQueue(preload=preload)
 
 
-def create_admin_app(settings: ServerSettings | None = None, read_queue: ReadQueue | None = None) -> FastAPI:
-    """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다. read_queue는 휴대폰 앱과 같은 큐를 공유한다."""
+def create_admin_app(
+    settings: ServerSettings | None = None, read_queue: ReadQueue | None = None, events: EventBroker | None = None
+) -> FastAPI:
+    """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다. read_queue · events는 휴대폰 앱과 같은 것을 공유한다."""
     cfg = settings or load_settings()
     admin = FastAPI(
         title="KTL Field Server - Admin API",
@@ -77,7 +86,7 @@ def create_admin_app(settings: ServerSettings | None = None, read_queue: ReadQue
         docs_url="/docs",
         openapi_url="/openapi.json",
     )
-    _configure_state(admin, cfg, default_actor="admin", phone_only=False)
+    _configure_state(admin, cfg, default_actor="admin", phone_only=False, events=events)
     register_error_handlers(admin)
     admin.state.read_queue = read_queue
     admin.add_middleware(LoopbackOnlyMiddleware)
@@ -89,9 +98,13 @@ def create_admin_app(settings: ServerSettings | None = None, read_queue: ReadQue
     return admin
 
 
-def create_mobile_app(settings: ServerSettings | None = None, read_queue: ReadQueue | None = None) -> FastAPI:
-    """휴대폰 전용 FastAPI 앱(:8765)을 생성한다. read_queue를 주지 않으면 앱 수명 동안 큐를 직접 띄운다."""
+def create_mobile_app(
+    settings: ServerSettings | None = None, read_queue: ReadQueue | None = None, events: EventBroker | None = None
+) -> FastAPI:
+    """휴대폰 전용 FastAPI 앱(:8765)을 생성한다. read_queue를 주지 않으면 앱 수명 동안 큐를 직접 띄우고
+    판독 알림을 이 앱의 SSE로 잇는다. read_queue를 주면 SSE 연결은 준 쪽(serve_both)이 한다."""
     cfg = settings or load_settings()
+    broker = events or EventBroker()
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -99,6 +112,9 @@ def create_mobile_app(settings: ServerSettings | None = None, read_queue: ReadQu
 
         owned_queue = read_queue is None
         active_queue = read_queue or create_read_queue()
+        if owned_queue:
+            # TODO(#4): 판독 결과 DB 저장 리스너를 이것보다 먼저 subscribe 한다 (read_event_listener 설명 참고)
+            active_queue.subscribe(read_event_listener(broker))
         _app.state.read_queue = active_queue
         active_queue.start()
 
@@ -107,10 +123,11 @@ def create_mobile_app(settings: ServerSettings | None = None, read_queue: ReadQu
 
         if os.getenv("KTL_ADMIN_SIDECAR", "1") == "1":
             admin_config = uvicorn.Config(
-                create_admin_app(cfg, active_queue),
+                create_admin_app(cfg, active_queue, broker),
                 host=cfg.admin_host,
                 port=cfg.admin_port,
                 log_level="info",
+                timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
             )
             admin_server = uvicorn.Server(admin_config)
             admin_task = asyncio.create_task(admin_server.serve())
@@ -132,7 +149,7 @@ def create_mobile_app(settings: ServerSettings | None = None, read_queue: ReadQu
         lifespan=_lifespan,
     )
     # TODO(REQ-B1-10): 로그인 구현 후 created_by 등은 세션의 시험자 ID로 바뀐다 (app/api/deps.py get_actor)
-    _configure_state(mobile, cfg, default_actor="anonymous", phone_only=True)
+    _configure_state(mobile, cfg, default_actor="anonymous", phone_only=True, events=broker)
     register_error_handlers(mobile)
     mobile.include_router(mobile_api_router)
 
@@ -153,13 +170,26 @@ async def serve_both(settings: ServerSettings | None = None) -> None:
     os.environ["KTL_ADMIN_SIDECAR"] = "0"
     ensure_storage_dirs(cfg.storage_dir)
 
+    events = EventBroker()
     read_queue = create_read_queue()
+    # TODO(#4): 판독 결과 DB 저장 리스너를 이것보다 먼저 subscribe 한다
+    read_queue.subscribe(read_event_listener(events))
     read_queue.start()
     mobile_server = uvicorn.Server(
-        uvicorn.Config(create_mobile_app(cfg, read_queue), host=cfg.mobile_host, port=cfg.mobile_port)
+        uvicorn.Config(
+            create_mobile_app(cfg, read_queue, events),
+            host=cfg.mobile_host,
+            port=cfg.mobile_port,
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+        )
     )
     admin_server = uvicorn.Server(
-        uvicorn.Config(create_admin_app(cfg, read_queue), host=cfg.admin_host, port=cfg.admin_port)
+        uvicorn.Config(
+            create_admin_app(cfg, read_queue, events),
+            host=cfg.admin_host,
+            port=cfg.admin_port,
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+        )
     )
     try:
         await asyncio.gather(mobile_server.serve(), admin_server.serve())
