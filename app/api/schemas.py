@@ -120,3 +120,14 @@ class Photo(BaseModel):
     warnings: list[PhotoWarning]
     error: str | None
     read_ms: int | None
+
+
+class ValueChange(BaseModel):
+    key: str
+    value: str
+    reason: str | None = Field(default=None, description="값을 바꾸면 필수. 바꾸지 않고 확정만 하면 생략")
+
+
+class ValuesPatch(BaseModel):
+    values: list[ValueChange]
+    confirm: bool = False

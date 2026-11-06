@@ -14,6 +14,20 @@ storage/
 *.bmp
 *.tif
 *.tiff
+# 로거 파일 · 내보내기 결과 · 견본 문서 (data-guard와 같은 기준: synthetic/ 아래만 허용)
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.xls
+*.hwp
+*.hwpx
+*.zip
+*.7z
+*.txt
+!requirements*.txt
+!LICENSE.txt
+!NOTICE.txt
 !**/synthetic/**
 !docs/images/**
 !assets/**
@@ -23,6 +37,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+# 버전별 가상환경 (.venv312 등) — uv가 아닌 python -m venv로 만들면 안쪽 .gitignore가 없다
+.venv*/
+venv*/
+.python-version
 src/
 *.egg-info/
 .eggs/
