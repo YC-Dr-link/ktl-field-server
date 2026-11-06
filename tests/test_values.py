@@ -255,3 +255,53 @@ def test_openapi_documents_patch(env) -> None:
     item = spec["components"]["schemas"]["ValueChange"]
     assert set(item["required"]) == {"key", "value"}
     assert set(item["properties"]) == {"key", "value", "reason"}
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        ({"key": "flow", "value": "1.0\u000020", "reason": "제어 문자"}, "values.0.value"),
+        ({"key": "flow", "value": "1.020", "reason": "사유\u0007"}, "values.0.reason"),
+    ],
+)
+def test_control_characters_400(env, tmp_path: Path, change: dict, field: str) -> None:
+    mobile, _, _ = env
+    _, photo_id = _read_photo(mobile, tmp_path)
+    res = _patch(mobile, photo_id, [change])
+    assert res.status_code == 400
+    assert field in res.json()["error"]["detail"]["fields"]
+    assert _history(tmp_path) == []
+
+
+def test_too_many_values_400(env, tmp_path: Path) -> None:
+    mobile, _, _ = env
+    _, photo_id = _read_photo(mobile, tmp_path)
+    res = _patch(mobile, photo_id, [{"key": f"k{i}", "value": "1"} for i in range(101)])
+    assert res.status_code == 400
+    assert "values" in res.json()["error"]["detail"]["fields"]
+
+
+def test_duplicate_stored_key_is_not_merged(env, tmp_path: Path) -> None:
+    """모듈이 같은 key를 두 번 돌려줘도 다른 값을 고칠 때 섞이지 않고, 그 key는 고칠 수 없다."""
+    mobile, _, _ = env
+    dup = [READ_VALUES[0], {**READ_VALUES[0], "value": "9.999", "status": "auto"}, READ_VALUES[1]]
+    _, photo_id = _read_photo(mobile, tmp_path, values=dup)
+    res = _patch(mobile, photo_id, [{"key": "reading_no", "value": "02 of 003", "reason": "번호 오독"}])
+    assert res.status_code == 200
+    assert [v["value"] for v in res.json()["values"]] == ["1.002", "9.999", "02 of 003"]
+    res = _patch(mobile, photo_id, [{"key": "flow", "value": "1.020", "reason": "수정"}])
+    assert res.status_code == 400
+    assert "values.0.key" in res.json()["error"]["detail"]["fields"]
+
+
+def test_no_change_does_not_write(env, tmp_path: Path) -> None:
+    mobile, _, _ = env
+    case_id, photo_id = _read_photo(mobile, tmp_path)
+    with _db(tmp_path) as conn:
+        before = conn.execute("SELECT updated_at FROM cases").fetchone()[0]
+    res = _patch(mobile, photo_id, [{"key": "flow", "value": "1.002"}])
+    assert res.status_code == 200
+    assert [v["status"] for v in res.json()["values"]] == ["auto", "needs_check"]
+    with _db(tmp_path) as conn:
+        assert conn.execute("SELECT updated_at FROM cases").fetchone()[0] == before
+    assert _stored_values(tmp_path, photo_id) == READ_VALUES
