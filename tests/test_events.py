@@ -361,3 +361,34 @@ def test_openapi_documents_events_on_both_apps(apps: tuple[FastAPI, FastAPI, Eve
         assert list(content) == ["text/event-stream"]
         props = content["text/event-stream"]["schema"]["properties"]
         assert set(props) == {"photo_id", "case_id", "unit_index", "item_key", "id", "status"}
+
+
+def test_shutdown_signal_while_loop_holds_lock_does_not_hang() -> None:
+    """신호 처리기는 이벤트 루프 스레드에서 끼어든다. 그 스레드가 배달부 잠금을 쥔 순간(연결·끊김)이어도 멈추지 않는다."""
+    broker = EventBroker()
+    install_uvicorn_exit_hook()
+    server = uvicorn.Server(uvicorn.Config(FastAPI()))
+
+    async def scenario() -> None:
+        with broker.subscribe() as sub:
+            with broker._lock:  # 같은 스레드가 잠금을 쥔 채 신호를 받는 상황
+                began = time.monotonic()
+                server.handle_exit(signal.SIGINT, None)
+                assert time.monotonic() - began < 0.5
+            assert await sub.get(2) is None  # 잠금이 풀리면 스트림이 닫힌다
+
+    asyncio.run(scenario())
+
+
+def test_job_without_case_sends_no_event() -> None:
+    """계약상 case_id · unit_index는 null이 될 수 없다. 빠진 작업은 알림을 보내지 않는다 (업로드 쪽 버그로 기록)."""
+    broker = EventBroker()
+    listener = read_event_listener(broker)
+
+    async def scenario() -> None:
+        with broker.subscribe() as sub:
+            await asyncio.to_thread(listener, ReadJob("ph_1", "x.jpg", "cert", "cert"), ReadOutcome("ph_1", "done"))
+            broker.publish("case.updated", {"case_id": "case_1"})
+            assert (await sub.get(2)).name == "case.updated"  # type: ignore[union-attr]
+
+    asyncio.run(scenario())
