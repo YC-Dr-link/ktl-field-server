@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, local_now
@@ -41,3 +41,23 @@ class Photo(Base):
     read_ms: Mapped[int | None] = mapped_column(Integer)
     deleted_at: Mapped[datetime | None] = mapped_column(_TS)
     deleted_reason: Mapped[str | None] = mapped_column(String(200))
+
+
+class ValueEdit(Base):
+    """값 수정 이력 (REQ-B1-06): 이전 값 · 새 값 · 사유 · 수정자 · 시각. 지우거나 고치지 않고 쌓기만 한다."""
+
+    __tablename__ = "value_edits"
+    __table_args__ = (
+        Index("ix_value_edits_photo_key", "photo_id", "value_key"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id"))
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    value_key: Mapped[str] = mapped_column(String(64))
+    old_value: Mapped[str] = mapped_column(Text)
+    new_value: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    edited_by: Mapped[str] = mapped_column(String(64))
+    edited_at: Mapped[datetime] = mapped_column(_TS, default=local_now)

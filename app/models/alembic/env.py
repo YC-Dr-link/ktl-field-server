@@ -7,7 +7,7 @@ from alembic import context
 
 from app.models import Base, create_db_engine, load_settings
 import app.models.auth  # noqa: F401  (테이블을 metadata에 등록)
-import app.models.photos  # noqa: F401
+import app.models.photos  # noqa: F401  (photos · value_edits)
 
 config = context.config
 
