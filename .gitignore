@@ -64,3 +64,35 @@ Gemini.md
 .claude/
 .cursor/
 .gemini/
+
+# 가상환경 이름 변형 (.venv312 · .venv-3.12 등 — 파이썬 버전별로 따로 만들 때)
+.venv*/
+venv*/
+
+# 실제 견본 데이터가 될 수 있는 파일 (data-guard와 같은 기준: synthetic/ 아래만 허용)
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.xls
+*.hwp
+*.hwpx
+*.zip
+*.7z
+*.txt
+!requirements*.txt
+!LICENSE.txt
+!NOTICE.txt
+*.pdf
+!docs/**/*.pdf
+!**/synthetic/**
+# 엑셀·한글로 연 파일의 잠금 파일
+~$*
+
+# Windows · 다른 AI 도구
+ehthumbs.db
+$RECYCLE.BIN/
+*.lnk
+.codex/
+.aider*
+.windsurf/
