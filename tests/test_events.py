@@ -27,6 +27,11 @@ from app.models import BASE_DIR, load_settings
 from app.services.events import PING, EventBroker, install_uvicorn_exit_hook, read_event_listener
 from app.worker import ReadJob, ReadOutcome, ReadQueue
 
+try:  # 휴대폰 로그인(#2)이 병합된 뒤에는 /events도 쿠키 인증을 받는다
+    from app.api.security import require_session
+except ImportError:  # pragma: no cover - #2 병합 전
+    require_session = None
+
 CATEGORIES_YAML = Path(__file__).parent / "fixtures" / "synthetic" / "categories.yaml"
 MOBILE_EVENTS = "/api/v1/events"
 ADMIN_EVENTS = "/api/admin/v1/events"
@@ -36,8 +41,8 @@ NEW_CASE = {"receipt_no": "26-000123-01", "category": "sampling", "unit_count": 
 class SseClient:
     """ASGI 앱에 SSE 요청 하나를 열어 두고 받은 조각을 이벤트(dict)로 나눠 준다."""
 
-    def __init__(self, app: FastAPI, path: str, host: str = "testserver") -> None:
-        self.app, self.path, self.host = app, path, host
+    def __init__(self, app: FastAPI, path: str, host: str = "testserver", cookie: str = "") -> None:
+        self.app, self.path, self.host, self.cookie = app, path, host, cookie
         self.start: dict[str, Any] = {}
         self.frames: asyncio.Queue[str | None] = asyncio.Queue()
         self.disconnected = False
@@ -56,7 +61,8 @@ class SseClient:
             "raw_path": self.path.encode(),
             "root_path": "",
             "query_string": b"",
-            "headers": [(b"host", self.host.encode()), (b"accept", b"text/event-stream")],
+            "headers": [(b"host", self.host.encode()), (b"accept", b"text/event-stream")]
+            + ([(b"cookie", self.cookie.encode())] if self.cookie else []),
             "client": ("127.0.0.1", 50000),
             "server": (self.host, 80),
         }
@@ -126,8 +132,12 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 @pytest.fixture()
 def apps(settings: Any) -> Iterator[tuple[FastAPI, FastAPI, EventBroker]]:
+    """휴대폰 · 관리 앱이 알림 배달부를 공유한다. 로그인 검사는 건너뛴다 (로그인은 test_phone_events_need_login)."""
     broker = EventBroker(ping_interval=0.3)
-    yield create_mobile_app(settings, events=broker), create_admin_app(settings, events=broker), broker
+    mobile = create_mobile_app(settings, events=broker)
+    if require_session is not None:
+        mobile.dependency_overrides[require_session] = lambda: None
+    yield mobile, create_admin_app(settings, events=broker), broker
     broker.close()
 
 
@@ -234,6 +244,34 @@ def test_case_created_event_on_phone_and_admin_streams(apps: tuple[FastAPI, Fast
                 assert await sse.next_event() == ("case.updated", {"case_id": res.json()["id"]})
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(require_session is None, reason="휴대폰 로그인(#2) 병합 후")
+def test_phone_events_need_login(settings: Any) -> None:
+    """쿠키 없으면 401로 구독하지 않는다. 로그인 후 열린 스트림은 DB 연결을 붙잡지 않는다 (몇 시간씩 열려 있음)."""
+    broker = EventBroker()
+    mobile, admin = create_mobile_app(settings, events=broker), create_admin_app(settings, events=broker)
+    with TestClient(mobile) as phone, TestClient(admin, client=("127.0.0.1", 50000), headers={"Host": "127.0.0.1:8766"}) as pc:
+        code = pc.post("/api/admin/v1/pair-codes").json()["code"]
+        assert phone.post("/api/v1/clients/pair", json={"pair_code": code, "device_name": "현장폰-1"}).status_code == 200
+        tester = pc.post("/api/admin/v1/testers", json={"name": "시험자B", "pin": "1234"}).json()["id"]
+        assert phone.post("/api/v1/sessions", json={"tester_id": tester, "pin": "1234"}).status_code == 200
+        cookie = "; ".join(f"{k}={v}" for k, v in phone.cookies.items())
+    pool = mobile.state.session_factory.kw["bind"].pool
+
+    async def scenario() -> None:
+        async with SseClient(mobile, MOBILE_EVENTS) as anonymous:
+            assert anonymous.start["status"] == 401
+            assert broker.subscriber_count == 0
+        async with SseClient(mobile, MOBILE_EVENTS, cookie=cookie) as sse:
+            assert sse.start["status"] == 200
+            assert broker.subscriber_count == 1
+            assert pool.checkedout() == 0
+            broker.publish("case.updated", {"case_id": "case_1"})
+            assert await sse.next_event() == ("case.updated", {"case_id": "case_1"})
+
+    asyncio.run(scenario())
+    broker.close()
 
 
 def test_admin_events_blocked_from_other_devices(apps: tuple[FastAPI, FastAPI, EventBroker]) -> None:
