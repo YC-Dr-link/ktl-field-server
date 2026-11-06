@@ -26,6 +26,8 @@ from app.worker.merges import MergeRunner
 from app.worker.selector import DEFAULT_LOADER
 
 logger = logging.getLogger(__name__)
+# 종료 신호 없이 should_exit만 세운 경우에도 열린 SSE가 종료를 무한정 붙잡지 않게 하는 상한
+SHUTDOWN_GRACE_SECONDS = 5
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -144,6 +146,7 @@ def create_mobile_app(
                 host=cfg.admin_host,
                 port=cfg.admin_port,
                 log_level="info",
+                timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
             )
             admin_server = uvicorn.Server(admin_config)
             admin_task = asyncio.create_task(admin_server.serve())
@@ -193,10 +196,20 @@ async def serve_both(settings: ServerSettings | None = None) -> None:
     read_queue.subscribe(read_event_listener(events))
     read_queue.start()
     mobile_server = uvicorn.Server(
-        uvicorn.Config(create_mobile_app(cfg, read_queue, events), host=cfg.mobile_host, port=cfg.mobile_port)
+        uvicorn.Config(
+            create_mobile_app(cfg, read_queue, events),
+            host=cfg.mobile_host,
+            port=cfg.mobile_port,
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+        )
     )
     admin_server = uvicorn.Server(
-        uvicorn.Config(create_admin_app(cfg, read_queue, events), host=cfg.admin_host, port=cfg.admin_port)
+        uvicorn.Config(
+            create_admin_app(cfg, read_queue, events),
+            host=cfg.admin_host,
+            port=cfg.admin_port,
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+        )
     )
     try:
         await asyncio.gather(mobile_server.serve(), admin_server.serve())

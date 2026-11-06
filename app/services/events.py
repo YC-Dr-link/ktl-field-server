@@ -170,7 +170,9 @@ def install_uvicorn_exit_hook() -> None:
 
         def handle_exit(self: Any, sig: int, frame: Any) -> None:
             original(self, sig, frame)
-            close_all_brokers()
+            # 신호 처리기는 이벤트 루프 스레드에서 아무 때나 끼어든다. 그 스레드가 배달부 잠금을 쥔 순간이면
+            # 여기서 잠금을 기다리다 영영 멈추므로, 닫기는 다른 스레드에 맡긴다 (close()는 스레드 안전).
+            threading.Thread(target=close_all_brokers, name="ktl-sse-close", daemon=True).start()
 
         handle_exit._ktl_closes_sse = True  # type: ignore[attr-defined]
         uvicorn.Server.handle_exit = handle_exit  # type: ignore[method-assign]
@@ -190,6 +192,9 @@ def read_event_listener(broker: EventBroker) -> Callable[[ReadJob, ReadOutcome],
     """
 
     def listener(job: ReadJob, outcome: ReadOutcome) -> None:
+        if job.case_id is None or job.unit_index is None:  # 계약상 문자열 · 정수. null을 보내면 화면이 거른다
+            logger.warning("case_id · unit_index 없는 판독 작업이라 SSE 알림을 보내지 않음: %s", job.photo_id)
+            return
         broker.publish(
             PHOTO_STATUS, photo_status_data(outcome.photo_id, job.case_id, job.unit_index, job.item_key, outcome.status)
         )
