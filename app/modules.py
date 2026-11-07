@@ -71,5 +71,9 @@ def get_reader(name: str) -> Reader:
 
 
 def get_selector(name: str) -> Selector:
-    """이름에 해당하는 Selector 모듈(기본: FakeSelector)을 반환한다."""
-    return FakeSelector(name=name)
+    """이름에 해당하는 B-4 Selector를 반환한다. ktl_selectors가 없거나 아직 등록 전이면 가짜 모듈."""
+    try:
+        from ktl_selectors import get_selector as load_selector
+    except ModuleNotFoundError:
+        return FakeSelector(name=name)
+    return load_selector(name)  # 등록 전 이름은 ktl_selectors가 가짜 모듈로 돌려준다
