@@ -131,3 +131,33 @@ class ValueChange(BaseModel):
 class ValuesPatch(BaseModel):
     values: list[ValueChange]
     confirm: bool = False
+
+
+ExportKind = Literal["photo_values", "merge_raw"]
+ExportFormat = Literal["csv", "txt", "xlsx"]
+ExportEncoding = Literal["cp949", "utf-8"]
+ExportStatus = Literal["queued", "running", "done", "failed"]
+
+
+class ExportCreate(BaseModel):
+    kind: ExportKind
+    format: ExportFormat
+    encoding: ExportEncoding = "cp949"
+    include_photos: bool = False
+    merge_id: str | None = Field(default=None, description="kind=merge_raw일 때")
+
+
+class ExportPreview(BaseModel):
+    columns: list[str]
+    rows: list[list[str]]
+
+
+class Export(BaseModel):
+    id: str = Field(examples=["ex_5"])
+    case_id: str
+    kind: str
+    format: str
+    status: ExportStatus
+    file_name: str | None = Field(examples=["26-000123-01_sampling_20261029-150301.csv"])
+    preview: ExportPreview | None
+    skipped_unconfirmed: int = Field(description="미확정이라 빠진 값 수")

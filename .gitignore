@@ -25,6 +25,12 @@ storage/
 *.zip
 *.7z
 *.txt
+# 스캔 문서 (data-guard: docs/ 아래만 허용)
+*.pdf
+!docs/**/*.pdf
+# 내보낸 CSV/TXT를 엑셀 · 리브레오피스로 열면 옆에 생기는 잠금 파일
+~$*
+.~lock.*#
 !requirements*.txt
 !LICENSE.txt
 !NOTICE.txt
