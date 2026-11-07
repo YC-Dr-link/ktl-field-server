@@ -201,8 +201,12 @@ def test_openapi_lists_export_paths_on_admin_only(env) -> None:
     assert set(schema["properties"]) == EXPORT_KEYS
 
 
-def test_unknown_export_column_is_blank_and_warned_once(caplog) -> None:
-    from app.services.exports import build_photo_table
+def test_unknown_export_column_is_blank_and_warned_once(caplog, monkeypatch) -> None:
+    from app.services import exports
+
+    # 앞 테스트의 alembic fileConfig가 기존 로거를 꺼 두므로 다시 켠다
+    monkeypatch.setattr(exports.logger, "disabled", False)
+    build_photo_table = exports.build_photo_table
 
     table = build_photo_table(["photo_first", "odd_column", "cert.approval_no"], 3, [])
     assert table.rows == [["", "", ""]] * 3
