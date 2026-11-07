@@ -34,9 +34,14 @@ storage/
 !requirements*.txt
 !LICENSE.txt
 !NOTICE.txt
+# PDF는 docs/ 아래에만 (data-guard 기준)
+*.pdf
+!docs/**/*.pdf
 !**/synthetic/**
 !docs/images/**
 !assets/**
+# 엑셀·한글로 연 파일의 잠금 파일 (~$견본.xlsx 등)
+~$*
 
 # Python
 __pycache__/
@@ -101,3 +106,11 @@ Gemini.md
 .claude/
 .cursor/
 .gemini/
+.codex/
+.aider*
+.windsurf/
+# Windows
+$RECYCLE.BIN/
+*.lnk
+# 이 레포를 여러 작업 폴더(git worktree)로 나눠 쓸 때 레포 안에 만든 폴더
+.worktrees/
