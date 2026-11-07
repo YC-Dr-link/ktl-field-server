@@ -7,10 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import ClientOut, TesterList, TesterOut
+from app.api.deps import get_actor, get_category_lookup
 from app.api.errors import not_found
+from app.api.schemas import Case, ReopenRequest, ReviewQueue, Settings
 from app.models import get_db, to_iso
 from app.models.auth import Client, Tester
 from app.services import auth as auth_service
+from app.services import cases as case_service
+from app.services import settings as settings_service
+from app.services.cases import CategoryLookup
+from app.services.review import review_queue
 
 router = APIRouter(tags=["admin"])
 
@@ -99,3 +105,34 @@ def update_tester(tester_id: str, body: TesterPatch, db: Session = Depends(get_d
         auth_service.end_sessions(db, tester_id=tester.id)
     db.commit()
     return TesterOut.of(tester, full=True)
+
+
+@router.get("/review-queue", response_model=ReviewQueue, summary="확인 필요(needs_check) 값 모아 보기")
+def get_review_queue(db: Session = Depends(get_db)) -> ReviewQueue:
+    return ReviewQueue(items=review_queue(db))
+
+
+@router.post(
+    "/cases/{case_id}/reopen",
+    response_model=Case,
+    summary="완료 건 다시 열기",
+    responses={400: {"description": "사유 없음 · 이미 열린 건"}, 404: {"description": "없는 건"}},
+)
+def reopen_case(
+    case_id: str,
+    body: ReopenRequest,
+    db: Session = Depends(get_db),
+    lookup: CategoryLookup = Depends(get_category_lookup),
+    actor: str = Depends(get_actor),
+) -> Case:
+    return case_service.reopen_case(db, case_id, body.reason, lookup, actor=actor)
+
+
+@router.get("/settings", response_model=Settings, summary="설정 조회")
+def get_settings(db: Session = Depends(get_db)) -> Settings:
+    return settings_service.read_settings(db)
+
+
+@router.put("/settings", response_model=Settings, summary="설정 변경")
+def put_settings(body: Settings, db: Session = Depends(get_db)) -> Settings:
+    return settings_service.update_settings(db, body)

@@ -5,14 +5,15 @@ from collections.abc import Callable, Mapping
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.api.errors import not_found, validation_error
 from app.api.schemas import Case, CaseCreate, CaseSummary, ItemStatus, Progress, Unit, UnitItem
 from app.models import Case as CaseRow
-from app.models import local_now, to_iso
+from app.models import CaseReopen, local_now, to_iso
 from app.models.photos import Photo as PhotoRow
+from app.services.text import text_problem
 
 CASE_ID_PREFIX = "case_"
 PHOTO_ID_PREFIX = "ph_"
@@ -205,3 +206,29 @@ def list_cases(
     ]
     next_cursor = format_case_id(rows[-1].id) if has_more and rows else None
     return items, next_cursor
+
+
+def reopen_case(db: Session, case_id: str, reason: str, category_lookup: CategoryLookup, *, actor: str) -> Case:
+    """완료 건을 다시 연다 (관리 화면). 사유는 필수이고 `case_reopens`에 이력으로 남는다."""
+    pk = parse_case_id(case_id)
+    reason = reason.strip()
+    if problem := ("다시 여는 사유를 적어야 합니다." if not reason else text_problem(reason)):
+        raise validation_error({"reason": problem})
+    now = local_now()
+    try:
+        # 조건부 UPDATE 한 번으로 상태를 바꿔 동시에 두 번 열어도 이력이 한 번만 남게 한다
+        reopened = db.execute(
+            update(CaseRow).where(CaseRow.id == pk, CaseRow.status == "completed").values(status="open", updated_at=now)
+        )
+        if reopened.rowcount != 1:
+            if db.get(CaseRow, pk) is None:
+                raise not_found("접수 건을 찾을 수 없습니다.")
+            # TODO(확인 필요): 이미 열린 건을 다시 열기 — 계약에 코드가 없어 400 VALIDATION
+            raise validation_error({"status": "완료된 건만 다시 열 수 있습니다."}, "이미 열려 있는 건입니다.")
+        db.add(CaseReopen(case_id=pk, reason=reason, reopened_by=actor, reopened_at=now))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    # TODO(#6): SSE case.updated 알림은 #6 병합 후 여기서 보낸다.
+    return get_case(db, case_id, category_lookup)

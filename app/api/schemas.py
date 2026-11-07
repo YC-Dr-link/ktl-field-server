@@ -161,3 +161,34 @@ class Export(BaseModel):
     file_name: str | None = Field(examples=["26-000123-01_sampling_20261029-150301.csv"])
     preview: ExportPreview | None
     skipped_unconfirmed: int = Field(description="미확정이라 빠진 값 수")
+
+
+# ── 관리 API 전용 (§2.5) ──────────────────────────────────────────────
+
+
+class ReviewQueueItem(BaseModel):
+    """확인 필요(needs_check) 값 하나와 그 값이 있는 건·사진·칸."""
+
+    case_id: str = Field(examples=["case_12"])
+    receipt_no: str = Field(examples=["26-000123-01"])
+    photo_id: str = Field(examples=["ph_301"])
+    unit_index: int
+    item_key: str = Field(examples=["prec_1"])
+    value: Value
+
+
+class ReviewQueue(BaseModel):
+    items: list[ReviewQueueItem]
+
+
+class ReopenRequest(BaseModel):
+    reason: str = Field(examples=["확정 값 정정 요청"])
+
+
+class Settings(BaseModel):
+    """관리 설정 (`GET · PUT /settings`). PUT은 보낸 칸만 바꾼다."""
+
+    export_encoding: ExportEncoding = "cp949"
+    photo_retention_days: int | None = Field(default=None, ge=1, description="null이면 자동 삭제 안 함")
+    confidence_threshold: float = Field(default=0.8, ge=0, le=1)
+    read_timeout_s: int = Field(default=10, ge=1, le=60)
