@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Request
-from sqlalchemy import JSON, DateTime, Engine, Integer, String, create_engine, event
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -102,6 +102,19 @@ class Case(Base):
     )
 
 
+class CaseReopen(Base):
+    """완료 건 다시 열기 이력 (관리 화면 `POST /cases/{id}/reopen`). 지우거나 고치지 않고 쌓기만 한다."""
+
+    __tablename__ = "case_reopens"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    reopened_by: Mapped[str] = mapped_column(String(64))
+    reopened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)
+
+
 def _enable_sqlite_wal(dbapi_connection: Any, _connection_record: Any) -> None:
     """SQLite 연결 시 WAL 모드와 외래키 제약을 활성화한다."""
     cursor = dbapi_connection.cursor()
@@ -157,6 +170,7 @@ __all__ = [
     "BASE_DIR",
     "Base",
     "Case",
+    "CaseReopen",
     "LOOPBACK_HOSTS",
     "ServerSettings",
     "SessionLocal",
