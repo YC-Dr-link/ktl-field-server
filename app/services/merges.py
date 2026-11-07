@@ -11,9 +11,11 @@ from collections.abc import Mapping
 import logging
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import time
 from typing import Any, BinaryIO
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.errors import ApiError, not_found, validation_error
@@ -40,6 +42,7 @@ FILE_ID_PREFIX = "file"
 MERGE_ID_PREFIX = "mg"
 RADON_ALIGN = ("sequence", "hour")
 RESTART_ERROR = "서버가 다시 시작되어 병합이 중단되었습니다. 다시 실행하세요."
+_FINISH_ATTEMPTS = 3
 _SAFE_EXT = re.compile(r"^\.[a-z0-9]{1,8}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -277,9 +280,19 @@ def run_merge(
         logger.exception("병합 실행 중 서버 오류 (mg_%s)", merge_pk)
         result["error"] = "병합 중 서버 오류가 발생했습니다."
     result["finished_at"] = local_now()
-    with session_factory() as db:
-        db.execute(update(MergeRow).where(MergeRow.id == merge_pk, MergeRow.status == "running").values(**result))
-        db.commit()
+    for attempt in range(1, _FINISH_ATTEMPTS + 1):
+        try:
+            with session_factory() as db:
+                db.execute(
+                    update(MergeRow).where(MergeRow.id == merge_pk, MergeRow.status == "running").values(**result)
+                )
+                db.commit()
+            break
+        except OperationalError:  # DB 잠김 등 — 결과를 못 쓰면 running에 묶이므로 몇 번 더 시도
+            if attempt == _FINISH_ATTEMPTS:
+                logger.exception("병합 결과를 저장하지 못했습니다 (mg_%s) — 다음 시작 때 failed로 정리됩니다.", merge_pk)
+                return
+            time.sleep(1.0)
     # TODO(#6): SSE `merge.status` { id, case_id, status } 알림은 #6 병합 후 여기서 보낸다
 
 

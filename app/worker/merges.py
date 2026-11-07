@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 from pathlib import Path
+import queue
+import threading
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
@@ -21,12 +22,26 @@ class MergeRunner:
     def __init__(self, session_factory: sessionmaker[Session], storage_dir: Path) -> None:
         self._session_factory = session_factory
         self._storage_dir = storage_dir
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="merge")
+        self._queue: queue.Queue[tuple[int, str] | None] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
 
-    def submit(self, merge_pk: int, *, loader: str) -> Future[None]:
-        return self._executor.submit(
-            merge_service.run_merge, self._session_factory, self._storage_dir, merge_pk, loader=loader
-        )
+    def submit(self, merge_pk: int, *, loader: str) -> None:
+        with self._lock:
+            if self._thread is None:
+                # daemon 스레드: ThreadPoolExecutor는 프로세스 종료 때 작업 스레드를 join하므로
+                # 돌고 있는 병합(최대 60초)이 끝날 때까지 서버 종료가 멈춘다. daemon이면 기다리지 않는다.
+                self._thread = threading.Thread(target=self._loop, name="merge", daemon=True)
+                self._thread.start()
+        self._queue.put((merge_pk, loader))
+
+    def _loop(self) -> None:
+        while (job := self._queue.get()) is not None:
+            merge_pk, loader = job
+            try:
+                merge_service.run_merge(self._session_factory, self._storage_dir, merge_pk, loader=loader)
+            except Exception:  # noqa: BLE001 - 실행기 스레드가 죽지 않게
+                logger.exception("병합 실행기 오류 (mg_%s)", merge_pk)
 
     def recover(self) -> None:
         try:
@@ -38,5 +53,6 @@ class MergeRunner:
             logger.warning("끝나지 못한 병합 %d건을 failed로 바꿨습니다 (서버 재시작).", count)
 
     def shutdown(self) -> None:
-        # 기다리지 않는다: 돌고 있는 모듈 프로세스는 daemon이라 서버와 같이 끝나고, 다음 시작 때 failed로 정리된다
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        # 기다리지 않는다: 남은 병합은 queued · running으로 남아 다음 시작 때 failed로 정리되고,
+        # 돌고 있는 모듈 프로세스는 daemon이라 서버와 같이 끝난다
+        self._queue.put(None)

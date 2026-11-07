@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 DETECT_TIMEOUT_S = 10.0
 SERIES_TIMEOUT_S = 10.0
 RUN_TIMEOUT_S = 60.0
+# 파이썬 시작 · import 몫 (모듈 시간 제한과 따로 잰다)
+STARTUP_TIMEOUT_S = 30.0
 DEFAULT_LOADER = "app.modules:get_selector"
 _JOIN_GRACE_S = 5.0
 
@@ -37,29 +39,43 @@ def call_selector(
     timeout: float,
     loader: str = DEFAULT_LOADER,
 ) -> Any:
-    """`get_selector(selector).<method>(*args)`를 새 프로세스에서 실행하고 JSON 모양 결과를 돌려준다."""
+    """`get_selector(selector).<method>(*args)`를 새 프로세스에서 실행하고 JSON 모양 결과를 돌려준다.
+
+    `timeout`은 모듈이 일하는 시간만 잰다. 파이썬 시작 · pandas · 모듈 import는 STARTUP_TIMEOUT_S로 따로 잰다
+    (현장 노트북 첫 실행은 백신 검사 등으로 시작만 수 초 걸릴 수 있다).
+    """
     ctx = multiprocessing.get_context("spawn")  # fork는 서버 스레드·잠금을 복사하므로 쓰지 않는다
     receiver, sender = ctx.Pipe(duplex=False)
     proc = ctx.Process(target=_child_main, args=(sender, loader, selector, method, args), daemon=True)
     proc.start()
     sender.close()  # 자식이 결과 없이 죽으면 recv()가 EOFError를 내도록 부모 쪽 끝은 닫는다
+    timed_out = False
     try:
-        if not receiver.poll(timeout):
-            raise SelectorFailed(f"{selector} 모듈이 {timeout:.0f}초 안에 끝나지 않았습니다.")
-        try:
-            ok, payload = receiver.recv()
-        except (EOFError, OSError):
-            raise SelectorFailed(f"{selector} 모듈 프로세스가 비정상 종료했습니다.") from None
+        kind, payload = _receive(receiver, STARTUP_TIMEOUT_S, selector, "모듈을 불러오지 못했습니다")
+        if kind == "ready":
+            kind, payload = _receive(receiver, timeout, selector, f"모듈이 {timeout:.0f}초 안에 끝나지 않았습니다")
+    except SelectorFailed:
+        timed_out = proc.is_alive()
+        raise
     finally:
         receiver.close()
-        _stop(proc)
-    if not ok:
+        _stop(proc, grace=0.0 if timed_out else _JOIN_GRACE_S)  # 멈춘 모듈은 더 기다리지 않고 바로 끈다
+    if kind != "ok":
         raise SelectorFailed(payload)
     return payload
 
 
-def _stop(proc: multiprocessing.process.BaseProcess) -> None:
-    proc.join(_JOIN_GRACE_S)
+def _receive(receiver: Connection, timeout: float, selector: str, timeout_message: str) -> tuple[str, Any]:
+    if not receiver.poll(timeout):
+        raise SelectorFailed(f"{selector} {timeout_message}.")
+    try:
+        return receiver.recv()
+    except (EOFError, OSError):
+        raise SelectorFailed(f"{selector} 모듈 프로세스가 비정상 종료했습니다.") from None
+
+
+def _stop(proc: multiprocessing.process.BaseProcess, grace: float = _JOIN_GRACE_S) -> None:
+    proc.join(grace)
     if proc.is_alive():
         proc.terminate()
         proc.join(_JOIN_GRACE_S)
@@ -69,18 +85,22 @@ def _stop(proc: multiprocessing.process.BaseProcess) -> None:
 
 
 def _child_main(conn: Connection, loader: str, selector: str, method: str, args: tuple[Any, ...]) -> None:
+    """자식 프로세스: 모듈을 불러오면 ("ready"), 끝나면 ("ok", 결과) 또는 ("error", 메시지)를 보낸다."""
     try:
+        try:
+            import pandas  # noqa: F401  - 모듈이 함수 안에서 import해도 시작 시간에 들어가게 미리
+        except ModuleNotFoundError:  # pragma: no cover
+            pass
         module_name, func_name = loader.split(":", 1)
-        get_selector = getattr(importlib.import_module(module_name), func_name)
-        result = getattr(get_selector(selector), method)(*args)
-        payload: tuple[bool, Any] = (True, _CONVERTERS[method](result))
+        instance = getattr(importlib.import_module(module_name), func_name)(selector)
+        conn.send(("ready", None))
+        message: tuple[str, Any] = ("ok", _CONVERTERS[method](getattr(instance, method)(*args)))
     except Exception as exc:  # noqa: BLE001 - 모듈 예외는 모두 그 호출의 실패로 돌려준다
-        message = str(exc).strip() or type(exc).__name__
-        payload = (False, f"{selector} 모듈 오류: {message}")
+        message = ("error", f"{selector} 모듈 오류: {str(exc).strip() or type(exc).__name__}")
     try:
-        conn.send(payload)
+        conn.send(message)
     except Exception as exc:  # noqa: BLE001 - 결과를 못 보내는 것도 실패로
-        conn.send((False, f"{selector} 모듈 결과를 전달하지 못했습니다: {exc}"))
+        conn.send(("error", f"{selector} 모듈 결과를 전달하지 못했습니다: {exc}"))
     finally:
         conn.close()
 

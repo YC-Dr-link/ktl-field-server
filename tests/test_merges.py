@@ -18,6 +18,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 import pytest
 
+from app.api.errors import ApiError
 from app.main import create_admin_app, create_mobile_app
 from app.models import BASE_DIR, create_session_factory, load_settings
 from app.services import merges as merge_service
@@ -281,8 +282,9 @@ def test_merge_raw_table_for_export(env) -> None:
     case_pk = int(case_id.split("_")[1])
     with create_session_factory(load_settings().database_url)() as db:
         assert merge_service.merge_raw_table(db, case_pk, done["id"]) == done["table"]
-        with pytest.raises(Exception, match="VALIDATION|요청"):
+        with pytest.raises(ApiError) as err:  # 다른 건의 병합은 내보내지 않는다
             merge_service.merge_raw_table(db, case_pk + 1, done["id"])
+        assert err.value.code == "VALIDATION" and "merge_id" in err.value.detail["fields"]
 
 
 def test_openapi_documents_merge_api(env) -> None:
