@@ -186,9 +186,11 @@ class ReopenRequest(BaseModel):
 
 
 class Settings(BaseModel):
-    """관리 설정 (`GET · PUT /settings`). PUT은 보낸 칸만 바꾼다."""
+    """관리 설정 (`GET · PUT /settings`). PUT은 전체 교체 — 빠진 칸은 기본값."""
 
+    # 숫자 칸은 strict — JSON true가 1로 바뀌어 저장되지 않게
+    # TODO(확인 필요): 범위(보관 1일 이상 · 기준 0~1 · 제한 1~60초)는 계약에 없어 안전용으로 정함
     export_encoding: ExportEncoding = "cp949"
-    photo_retention_days: int | None = Field(default=None, ge=1, description="null이면 자동 삭제 안 함")
-    confidence_threshold: float = Field(default=0.8, ge=0, le=1)
-    read_timeout_s: int = Field(default=10, ge=1, le=60)
+    photo_retention_days: int | None = Field(default=None, ge=1, strict=True, description="null이면 자동 삭제 안 함")
+    confidence_threshold: float = Field(default=0.8, ge=0, le=1, strict=True)
+    read_timeout_s: int = Field(default=10, ge=1, le=60, strict=True)

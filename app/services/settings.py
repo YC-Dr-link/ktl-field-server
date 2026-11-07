@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from app.api.schemas import Settings
@@ -21,26 +23,7 @@ logger = logging.getLogger(__name__)
 _KEYS = tuple(Settings.model_fields)
 
 
-def read_settings(db: Session) -> Settings:
-    stored = {
-        row.key: row.value for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(_KEYS)))
-    }
-    values = {}
-    for key, raw in stored.items():
-        try:
-            values[key] = json.loads(raw)
-        except ValueError:
-            logger.warning("설정 %s 값이 JSON이 아니라 기본값을 씁니다: %r", key, raw)
-    try:
-        return Settings(**values)
-    except ValidationError:
-        # 손으로 고친 DB 등으로 범위를 벗어난 값이 있어도 관리 화면은 열려야 한다 — 틀린 칸만 기본값
-        logger.warning("저장된 설정 일부가 올바르지 않아 기본값을 씁니다: %r", values)
-        good = {k: v for k, v in values.items() if _valid(k, v)}
-        return Settings(**good)
-
-
-def _valid(key: str, value: object) -> bool:
+def _valid(key: str, value: Any) -> bool:
     try:
         Settings.model_validate({key: value})
     except ValidationError:
@@ -48,18 +31,35 @@ def _valid(key: str, value: object) -> bool:
     return True
 
 
+def read_settings(db: Session) -> Settings:
+    """저장된 칸을 읽는다. 손으로 고친 DB 등으로 틀린 칸이 있어도 관리 화면은 열리게 그 칸만 기본값."""
+    values: dict[str, Any] = {}
+    for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(_KEYS))):
+        try:
+            value = json.loads(row.value)
+        except ValueError:
+            value = row.value
+        if _valid(row.key, value):
+            values[row.key] = value
+        else:
+            logger.warning("설정 %s 값이 올바르지 않아 기본값을 씁니다: %r", row.key, row.value)
+    return Settings(**values)
+
+
 def update_settings(db: Session, body: Settings) -> Settings:
-    """보낸 칸만 바꾼다 (빠진 칸은 그대로). `photo_retention_days: null`은 '자동 삭제 안 함'으로 저장."""
-    changes = body.model_dump(exclude_unset=True)
-    if changes:
-        now = local_now()
-        rows = {row.key: row for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(changes)))}
-        for key, value in changes.items():
-            raw = json.dumps(value)
-            row = rows.get(key)
-            if row is None:
-                db.add(SystemSetting(key=key, value=raw, updated_at=now))
-            elif row.value != raw:
-                row.value, row.updated_at = raw, now
+    """전체 교체 (PUT) — 빠진 칸은 기본값. `photo_retention_days: null`은 '자동 삭제 안 함'."""
+    now = local_now()
+    rows = [{"key": key, "value": json.dumps(value), "updated_at": now} for key, value in body.model_dump().items()]
+    stmt = insert(SystemSetting).values(rows)
+    # 두 화면이 동시에 저장해도 기본키 충돌(500) 없이 나중 것이 남게 upsert
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[SystemSetting.key],
+        set_={"value": stmt.excluded.value, "updated_at": stmt.excluded.updated_at},
+    )
+    try:
+        db.execute(stmt)
         db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     return read_settings(db)
