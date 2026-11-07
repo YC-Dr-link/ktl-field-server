@@ -57,7 +57,6 @@ def _was_edited(db: Session, photo_pk: int, key: str) -> bool:
     )
 
 
-
 def patch_values(db: Session, photo_id: str, body: ValuesPatch, *, actor: str) -> Photo:
     photo_pk = parse_photo_id(photo_id)
     if len(body.values) > MAX_VALUES:

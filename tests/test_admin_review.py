@@ -1,6 +1,8 @@
 """REQ-B2-06 관리 API — review-queue · 완료 건 다시 열기 · 설정 (02 §2.5)."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,14 @@ DEFAULT_SETTINGS = {
 def _set_case_status(tmp_path: Path, case_id: str, status: str) -> None:
     with _db(tmp_path) as conn:
         conn.execute("UPDATE cases SET status = ? WHERE id = ?", (status, int(case_id.removeprefix("case_"))))
+
+
+def _set_values(tmp_path: Path, photo_id: str, values: list[dict], status: str = "done") -> None:
+    with _db(tmp_path) as conn:
+        conn.execute(
+            'UPDATE photos SET status = ?, "values" = ? WHERE id = ?',
+            (status, json.dumps(values, ensure_ascii=False), int(photo_id.removeprefix("ph_"))),
+        )
 
 
 def _reopens(tmp_path: Path) -> list[tuple]:
@@ -76,6 +86,29 @@ def test_review_queue_orders_by_case_then_unit(env, tmp_path: Path) -> None:
     assert case_ids == [first, second]
 
 
+def test_review_queue_follows_category_item_order(env, tmp_path: Path) -> None:
+    mobile, admin, _ = env
+    case_id = _new_case(mobile)
+    # 나중 항목(prec_1)을 먼저 올려도 categories.yaml 순서(cert → prec_1)로 나온다
+    later = _upload(mobile, case_id, item_key="prec_1").json()["id"]
+    earlier = _upload(mobile, case_id, item_key="cert").json()["id"]
+    for photo_id in (later, earlier):
+        _set_values(tmp_path, photo_id, READ_VALUES)
+    items = admin.get(f"{ADMIN}/review-queue").json()["items"]
+    assert [(i["photo_id"], i["item_key"]) for i in items] == [(earlier, "cert"), (later, "prec_1")]
+
+
+def test_review_queue_skips_malformed_value(env, tmp_path: Path) -> None:
+    mobile, admin, _ = env
+    case_id = _new_case(mobile)
+    photo_id = _upload(mobile, case_id).json()["id"]
+    broken = {"key": "flow", "status": "needs_check"}  # label · value 없음
+    _set_values(tmp_path, photo_id, [broken, READ_VALUES[1]])
+    res = admin.get(f"{ADMIN}/review-queue")
+    assert res.status_code == 200
+    assert [i["value"]["key"] for i in res.json()["items"]] == ["reading_no"]
+
+
 # ── 완료 건 다시 열기 ──────────────────────────────────────────
 
 
@@ -127,19 +160,30 @@ def test_reopen_open_case_400_and_unknown_404(env, tmp_path: Path) -> None:
 # ── 설정 ────────────────────────────────────────────────────
 
 
-def test_settings_defaults_and_partial_update(env) -> None:
+def test_settings_defaults_and_full_replace(env) -> None:
     _, admin, _ = env
     assert admin.get(f"{ADMIN}/settings").json() == DEFAULT_SETTINGS
 
-    res = admin.put(f"{ADMIN}/settings", json={"export_encoding": "utf-8", "photo_retention_days": 30})
+    full = {"export_encoding": "utf-8", "photo_retention_days": 30, "confidence_threshold": 0.75, "read_timeout_s": 8}
+    res = admin.put(f"{ADMIN}/settings", json=full)
     assert res.status_code == 200
-    expected = {**DEFAULT_SETTINGS, "export_encoding": "utf-8", "photo_retention_days": 30}
-    assert res.json() == expected
-    assert admin.get(f"{ADMIN}/settings").json() == expected
+    assert res.json() == full
+    assert admin.get(f"{ADMIN}/settings").json() == full
 
-    # 보낸 칸만 바뀌고, null은 '자동 삭제 안 함'으로 되돌린다
-    res = admin.put(f"{ADMIN}/settings", json={"photo_retention_days": None, "confidence_threshold": 0.75})
-    assert res.json() == {**expected, "photo_retention_days": None, "confidence_threshold": 0.75}
+    # PUT은 전체 교체 — 빠진 칸은 기본값으로 돌아간다
+    res = admin.put(f"{ADMIN}/settings", json={"export_encoding": "utf-8"})
+    assert res.json() == {**DEFAULT_SETTINGS, "export_encoding": "utf-8"}
+    # 정수로 보낸 기준값도 받는다
+    assert admin.put(f"{ADMIN}/settings", json={"confidence_threshold": 1}).json()["confidence_threshold"] == 1
+
+
+def test_settings_concurrent_first_save(env) -> None:
+    _, admin, _ = env
+    bodies = [{"read_timeout_s": n} for n in range(1, 9)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        codes = list(pool.map(lambda b: admin.put(f"{ADMIN}/settings", json=b).status_code, bodies))
+    assert codes == [200] * len(bodies)
+    assert admin.get(f"{ADMIN}/settings").json()["read_timeout_s"] in range(1, 9)
 
 
 @pytest.mark.parametrize(
@@ -151,6 +195,9 @@ def test_settings_defaults_and_partial_update(env) -> None:
         {"photo_retention_days": 0},
         {"read_timeout_s": 0},
         {"read_timeout_s": "열"},
+        {"read_timeout_s": True},
+        {"photo_retention_days": True},
+        {"confidence_threshold": True},
     ],
 )
 def test_settings_rejects_bad_values(env, body: dict) -> None:
@@ -166,9 +213,8 @@ def test_settings_survive_broken_stored_value(env, tmp_path: Path) -> None:
     _, admin, _ = env
     admin.put(f"{ADMIN}/settings", json={"export_encoding": "utf-8"})
     with _db(tmp_path) as conn:
-        conn.execute(
-            "INSERT INTO system_settings (key, value, updated_at) VALUES ('read_timeout_s', '\"x\"', '2026-11-08')"
-        )
+        conn.execute("UPDATE system_settings SET value = '\"x\"' WHERE key = 'read_timeout_s'")
+        conn.execute("UPDATE system_settings SET value = 'not json' WHERE key = 'confidence_threshold'")
     assert admin.get(f"{ADMIN}/settings").json() == {**DEFAULT_SETTINGS, "export_encoding": "utf-8"}
 
 
