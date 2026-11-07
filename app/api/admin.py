@@ -108,8 +108,10 @@ def update_tester(tester_id: str, body: TesterPatch, db: Session = Depends(get_d
 
 
 @router.get("/review-queue", response_model=ReviewQueue, summary="확인 필요(needs_check) 값 모아 보기")
-def get_review_queue(db: Session = Depends(get_db)) -> ReviewQueue:
-    return ReviewQueue(items=review_queue(db))
+def get_review_queue(
+    db: Session = Depends(get_db), lookup: CategoryLookup = Depends(get_category_lookup)
+) -> ReviewQueue:
+    return ReviewQueue(items=review_queue(db, lookup))
 
 
 @router.post(
@@ -133,6 +135,6 @@ def get_settings(db: Session = Depends(get_db)) -> Settings:
     return settings_service.read_settings(db)
 
 
-@router.put("/settings", response_model=Settings, summary="설정 변경")
+@router.put("/settings", response_model=Settings, summary="설정 변경 (전체 교체, 빠진 칸은 기본값)")
 def put_settings(body: Settings, db: Session = Depends(get_db)) -> Settings:
     return settings_service.update_settings(db, body)
