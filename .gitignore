@@ -31,6 +31,9 @@ storage/
 # 내보낸 CSV/TXT를 엑셀 · 리브레오피스로 열면 옆에 생기는 잠금 파일
 ~$*
 .~lock.*#
+# 가스·라돈 로거 원본 (GL240 .gbd 바이너리 등) — 손으로 시험한 파일이 커밋되지 않게
+*.gbd
+*.dat
 !requirements*.txt
 !LICENSE.txt
 !NOTICE.txt
@@ -55,6 +58,8 @@ src/
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.xml
+.hypothesis/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
