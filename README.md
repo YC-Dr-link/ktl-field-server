@@ -43,3 +43,4 @@ alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8765
 ```
 `categories.yaml`은 위 모듈 설치 위치(`src/ktl-contract/`)에서 읽는다. 다른 곳이면 `KTL_CATEGORIES_PATH`로 지정.
+가스·라돈 선별/병합(관리 API `/files` · `/merges`)은 `ktl_selectors`(없거나 등록 전이면 가짜 모듈)를 별도 프로세스에서 시간 제한을 두고 부른다.
