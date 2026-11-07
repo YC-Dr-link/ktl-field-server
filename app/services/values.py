@@ -20,11 +20,10 @@ from app.models.photos import Photo as PhotoRow
 from app.models.photos import ValueEdit
 from app.services.cases import PHOTO_ID_PREFIX
 from app.services.photos import to_photo
+from app.services.text import text_problem
 
 CONFIRMED = frozenset({"confirmed", "edited"})
-MAX_TEXT = 500  # 값 · 사유 길이 상한 (DB · 화면 보호용)
 MAX_VALUES = 100  # 한 번에 보내는 값 개수 상한 (사진 1장의 칸 수보다 넉넉히)
-_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PHOTO_ID_RE = re.compile(rf"^{PHOTO_ID_PREFIX}([1-9]\d{{0,17}})$")
 
 
@@ -57,13 +56,6 @@ def _was_edited(db: Session, photo_pk: int, key: str) -> bool:
         db.scalar(select(exists().where(ValueEdit.photo_id == photo_pk, ValueEdit.value_key == key)))
     )
 
-
-def _text_problem(text: str) -> str | None:
-    if len(text) > MAX_TEXT:
-        return f"{MAX_TEXT}자 이하여야 합니다."
-    if _CONTROL_CHARS.search(text):  # 내보내기(xlsx 등)에서 깨지는 제어 문자
-        return "쓸 수 없는 문자가 들어 있습니다."
-    return None
 
 
 def patch_values(db: Session, photo_id: str, body: ValuesPatch, *, actor: str) -> Photo:
@@ -105,14 +97,14 @@ def patch_values(db: Session, photo_id: str, body: ValuesPatch, *, actor: str) -
                 continue
             old = stored[found[0]]
             changed = change.value != old.get("value")
-            if problem := _text_problem(change.value):
+            if problem := text_problem(change.value):
                 fields[f"{where}.value"] = problem
             elif body.confirm and not change.value.strip():
                 # TODO(확인 필요): 빈 값을 확정해도 되는지 (해당 없음 칸 등) — 지금은 거부
                 fields[f"{where}.value"] = "빈 값은 확정할 수 없습니다."
             if changed and not (change.reason or "").strip():
                 fields[f"{where}.reason"] = "값을 바꾸면 사유를 적어야 합니다."
-            elif change.reason is not None and (problem := _text_problem(change.reason)):
+            elif change.reason is not None and (problem := text_problem(change.reason)):
                 fields[f"{where}.reason"] = problem
             if old.get("status") in CONFIRMED and (changed or body.confirm):
                 already.append(change.key)
