@@ -1,7 +1,7 @@
 """요청·응답 스키마 — field-server.openapi.yaml `components/schemas`와 같은 모양."""
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -194,3 +194,49 @@ class Settings(BaseModel):
     photo_retention_days: int | None = Field(default=None, ge=1, strict=True, description="null이면 자동 삭제 안 함")
     confidence_threshold: float = Field(default=0.8, ge=0, le=1, strict=True)
     read_timeout_s: int = Field(default=10, ge=1, le=60, strict=True)
+
+
+# ── 가스·라돈 파일 · 선별/병합 (REQ-B1-09, §2.5 관리 API) ─────────────────
+
+MergeStatus = Literal["queued", "running", "done", "failed"]
+SelectorName = Literal["gas_select", "radon_merge"]
+
+
+class DataFile(BaseModel):
+    id: str = Field(examples=["file_7"])
+    case_id: str
+    name: str = Field(examples=["logger_1min.csv"])
+    sha256: str
+    detected: dict[str, Any] | None = Field(
+        description="B-4 detect() 결과 (kind · serial · interval_s · unit · rows …). 모르는 형식이면 null",
+        examples=[{"kind": "gas_gl240", "interval_s": 60, "unit": "PPB", "rows": 1440}],
+    )
+
+
+class Table(BaseModel):
+    columns: list[str]
+    rows: list[list[Any]]
+
+
+class Series(Table):
+    unit: str | None = Field(examples=["PPB"])
+
+
+class MergeCreate(BaseModel):
+    selector: SelectorName
+    file_ids: list[str] = Field(min_length=1, max_length=50, examples=[["file_7", "file_8"]])
+    options: dict[str, Any] = Field(
+        default_factory=dict,
+        description="gas_select: { ranges: { ZDS: [시작, 끝], … } } · radon_merge: { reference: file_id, align: sequence | hour }",
+    )
+
+
+class Merge(BaseModel):
+    id: str = Field(examples=["mg_3"])
+    case_id: str
+    selector: str
+    status: MergeStatus
+    table: Table | None
+    meta: dict[str, Any]
+    warnings: list[PhotoWarning]
+    error: str | None
