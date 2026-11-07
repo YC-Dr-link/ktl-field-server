@@ -199,3 +199,12 @@ def test_openapi_lists_export_paths_on_admin_only(env) -> None:
     assert not any("exports" in p for p in mobile.get("/openapi.json").json()["paths"])
     schema = admin.get("/openapi.json").json()["components"]["schemas"]["Export"]
     assert set(schema["properties"]) == EXPORT_KEYS
+
+
+def test_unknown_export_column_is_blank_and_warned_once(caplog) -> None:
+    from app.services.exports import build_photo_table
+
+    table = build_photo_table(["photo_first", "odd_column", "cert.approval_no"], 3, [])
+    assert table.rows == [["", "", ""]] * 3
+    assert table.skipped_unconfirmed == 3  # 값 칼럼(cert.approval_no)만 센다
+    assert sum("odd_column" in r.getMessage() for r in caplog.records) == 1

@@ -81,6 +81,22 @@ def _confirmed_value(photo: PhotoRow | None, value_key: str) -> str | None:
     return None
 
 
+def _parse_spec(export_spec: Sequence[str]) -> list[tuple[str, str] | None]:
+    """export 칼럼마다 (항목 key, 칸 key). `photo_first`는 ("", ""), 알 수 없는 표기는 None."""
+    parsed: list[tuple[str, str] | None] = []
+    for column in export_spec:
+        item_key, dot, value_key = column.partition(".")
+        if column == PHOTO_FIRST:
+            parsed.append(("", ""))
+        elif dot and item_key and value_key:
+            parsed.append((item_key, value_key))
+        else:
+            # TODO(확인 필요): categories.yaml export에 photo_first · 항목.칸 말고 다른 표기가 생기는지
+            logger.warning("categories.yaml export의 알 수 없는 칼럼: %s (빈 칸으로 출력)", column)
+            parsed.append(None)
+    return parsed
+
+
 def build_photo_table(export_spec: Sequence[str], unit_count: int, photos: Sequence[PhotoRow]) -> Table:
     """기기마다 한 행. `photos`는 다시 찍기로 지우지 않은 사진, id 오름차순."""
     current: dict[tuple[int, str], PhotoRow] = {}
@@ -89,24 +105,22 @@ def build_photo_table(export_spec: Sequence[str], unit_count: int, photos: Seque
         current[(photo.unit_index, photo.item_key)] = photo
         first_name.setdefault(photo.unit_index, photo.stored_name)
 
+    columns = _parse_spec(export_spec)
     rows: list[list[str]] = []
     skipped = 0
     for unit in range(1, unit_count + 1):
         row: list[str] = []
-        for column in export_spec:
-            item_key, dot, value_key = column.partition(".")
-            if column == PHOTO_FIRST:
+        for column in columns:
+            if column is None:
+                row.append("")
+            elif column == ("", ""):
                 # TODO(확인 필요): "첫 사진" = 그 기기에서 가장 먼저 올린 사진(지금) vs 촬영 항목 순서상 첫 칸 사진
                 row.append(first_name.get(unit, ""))
-            elif dot and item_key and value_key:
-                value = _confirmed_value(current.get((unit, item_key)), value_key)
+            else:
+                value = _confirmed_value(current.get((unit, column[0])), column[1])
                 if value is None:
                     skipped += 1
                 row.append(value or "")
-            else:
-                # TODO(확인 필요): categories.yaml export에 photo_first · 항목.칸 말고 다른 표기가 생기는지
-                logger.warning("categories.yaml export의 알 수 없는 칼럼: %s (빈 칸으로 출력)", column)
-                row.append("")
         rows.append(row)
     return Table(columns=list(export_spec), rows=rows, skipped_unconfirmed=skipped)
 
@@ -121,8 +135,12 @@ def render(table: Table, fmt: str) -> str:
     return buf.getvalue()
 
 
-def _check_encodable(table: Table, encoding: str) -> None:
-    """cp949로 못 쓰는 글자가 있으면 깨진 파일 대신 400 — 어느 기기 · 칼럼인지 알려 준다."""
+def encode(table: Table, fmt: str, encoding: str) -> bytes:
+    """파일 내용. cp949로 못 쓰는 글자가 있으면 깨진 파일 대신 400 — 어느 기기 · 칼럼인지 알려 준다."""
+    try:
+        return render(table, fmt).encode(encoding)
+    except UnicodeEncodeError:
+        pass
     fields: dict[str, str] = {}
     for unit, row in enumerate(table.rows, start=1):
         for column, cell in zip(table.columns, row):
@@ -130,8 +148,7 @@ def _check_encodable(table: Table, encoding: str) -> None:
                 cell.encode(encoding)
             except UnicodeEncodeError:
                 fields[f"rows.{unit}.{column}"] = f"{encoding}로 쓸 수 없는 글자가 있습니다. utf-8로 내보내세요."
-    if fields:
-        raise validation_error(fields, f"{encoding}로 쓸 수 없는 값이 있습니다.")
+    raise validation_error(fields, f"{encoding}로 쓸 수 없는 값이 있습니다.")
 
 
 def _validate(body: ExportCreate, category: Mapping[str, Any] | None) -> list[str]:
@@ -143,8 +160,9 @@ def _validate(body: ExportCreate, category: Mapping[str, Any] | None) -> list[st
         fields["format"] = "xlsx는 아직 지원하지 않습니다. csv 또는 txt를 쓰세요."  # TODO(확인 필요): xlsx 담당 이슈
     if body.include_photos:
         fields["include_photos"] = "사진 묶음(zip)은 아직 지원하지 않습니다."  # TODO(#14): 워터마크 사진 zip
-    export_spec = [str(c) for c in (category or {}).get("export") or []]
-    if body.kind == "photo_values" and (not (category or {}).get("items") or "merge_raw" in export_spec):
+    category = category or {}
+    export_spec = [str(c) for c in category.get("export") or []]
+    if body.kind == "photo_values" and (not category.get("items") or "merge_raw" in export_spec):
         fields["kind"] = "이 분류는 사진 업무가 아닙니다."
     if fields:
         raise validation_error(fields)
@@ -183,9 +201,8 @@ def create_export(
         select(PhotoRow).where(PhotoRow.case_id == case.id, PhotoRow.status != "deleted").order_by(PhotoRow.id)
     ).all()
     table = build_photo_table(export_spec, case.unit_count, photos)
-    _check_encodable(table, body.encoding)
     # TODO(확인 필요): utf-8 파일에 BOM을 붙일지 (엑셀에서 바로 열면 BOM이 없을 때 한글이 깨진다) — 지금은 BOM 없음
-    data = render(table, body.format).encode(body.encoding)
+    data = encode(table, body.format, body.encoding)
 
     now = local_now()
     base_name = f"{case.receipt_no}_{_UNSAFE_NAME.sub('_', case.category)}_{now:%Y%m%d-%H%M%S}"
