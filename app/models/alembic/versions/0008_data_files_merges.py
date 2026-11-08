@@ -1,7 +1,7 @@
 """data files, merges
 
-Revision ID: 0006_data_files_merges
-Revises: 0005_value_edits
+Revision ID: 0008_data_files_merges
+Revises: 0007_case_reopens
 Create Date: 2026-11-07 10:00:00
 """
 from __future__ import annotations
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0006_data_files_merges"
-down_revision: str | None = "0005_value_edits"
+revision: str = "0008_data_files_merges"
+down_revision: str | None = "0007_case_reopens"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
