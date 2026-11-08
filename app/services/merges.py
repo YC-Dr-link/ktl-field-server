@@ -308,10 +308,10 @@ def fail_unfinished_merges(session_factory: sessionmaker[Session]) -> int:
         return int(result.rowcount or 0)
 
 
-def merge_raw_table(db: Session, case_pk: int, merge_id: str) -> dict[str, Any]:
-    """`merge_raw` 내보내기용: 이 건의 끝난 병합 결과 표 (xlsm RAW 시트에 붙이는 배치 그대로).
+def merge_raw_table(db: Session, case_pk: int, merge_id: str) -> tuple[int, dict[str, Any]]:
+    """`merge_raw` 내보내기(app/services/exports.py)용: 이 건의 끝난 병합 → (병합 pk, 결과 표).
 
-    TODO(#8): 내보내기(app/services/exports.py)의 kind=merge_raw가 이 함수를 쓴다 — #8 병합 후 연결.
+    표는 xlsm RAW 시트에 붙이는 배치 그대로 (`{"columns": [...], "rows": [[...], ...]}`).
     TODO(확인 필요): RAW 시트에 붙일 때 머리글 행(columns)을 같이 넣는지 — 배치 기준은 B-4 표 그대로.
     """
     pk = parse_id(merge_id, MERGE_ID_PREFIX)
@@ -320,4 +320,4 @@ def merge_raw_table(db: Session, case_pk: int, merge_id: str) -> dict[str, Any]:
         raise validation_error({"merge_id": "이 건의 병합 결과가 아닙니다."})
     if row.status != "done" or row.table is None:
         raise validation_error({"merge_id": "끝난 병합 결과만 내보낼 수 있습니다."})
-    return row.table
+    return row.id, row.table
