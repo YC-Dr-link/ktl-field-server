@@ -281,7 +281,7 @@ def test_merge_raw_table_for_export(env) -> None:
     done = _wait(admin, _merge(admin, case_id, [file_id]).json()["id"])
     case_pk = int(case_id.split("_")[1])
     with create_session_factory(load_settings().database_url)() as db:
-        assert merge_service.merge_raw_table(db, case_pk, done["id"]) == done["table"]
+        assert merge_service.merge_raw_table(db, case_pk, done["id"]) == (int(done["id"][3:]), done["table"])
         with pytest.raises(ApiError) as err:  # 다른 건의 병합은 내보내지 않는다
             merge_service.merge_raw_table(db, case_pk + 1, done["id"])
         assert err.value.code == "VALIDATION" and "merge_id" in err.value.detail["fields"]
