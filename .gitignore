@@ -34,14 +34,9 @@ storage/
 !requirements*.txt
 !LICENSE.txt
 !NOTICE.txt
-# PDF는 docs/ 아래에만 (data-guard 기준)
-*.pdf
-!docs/**/*.pdf
 !**/synthetic/**
 !docs/images/**
 !assets/**
-# 엑셀·한글로 연 파일의 잠금 파일 (~$견본.xlsx 등)
-~$*
 
 # Python
 __pycache__/
