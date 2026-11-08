@@ -28,6 +28,7 @@ class Export(Base):
     preview: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     skipped_unconfirmed: Mapped[int] = mapped_column(Integer, default=0)
     # kind=merge_raw일 때 내보낸 병합 결과 (어떤 원본 · 선별에서 나온 파일인지 추적용)
-    merge_id: Mapped[int | None] = mapped_column(ForeignKey("merges.id"))
+    # 병합 기록이 지워져도 내보내기 이력은 남게 SET NULL
+    merge_id: Mapped[int | None] = mapped_column(ForeignKey("merges.id", ondelete="SET NULL"), index=True)
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=local_now)

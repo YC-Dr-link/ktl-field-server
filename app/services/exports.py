@@ -25,7 +25,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.errors import not_found, validation_error
+from app.api.errors import ApiError, not_found, validation_error
 from app.api.schemas import Export, ExportCreate, ExportPreview
 from app.models import Case as CaseRow
 from app.models import local_now
@@ -132,20 +132,34 @@ def build_photo_table(export_spec: Sequence[str], unit_count: int, photos: Seque
     return Table(columns=list(export_spec), rows=rows, skipped_unconfirmed=skipped)
 
 
+def _bad_merge_table(reason: str) -> ApiError:
+    return validation_error({"merge_id": f"병합 결과 표 모양이 올바르지 않습니다: {reason}"}, "병합 결과를 내보낼 수 없습니다.")
+
+
 def _cell(value: Any) -> str:
-    """병합 결과 칸 → 파일에 쓸 글자. 빈 칸(None)은 빈 문자열, 나머지는 B-4가 준 값 그대로 문자열로."""
-    # TODO(확인 필요): 숫자 칸의 소수 자릿수 · 지수 표기 — 지금은 B-4가 준 값의 파이썬 문자열 그대로 (1.0 → "1.0")
-    if value is None:
+    """병합 결과 칸 → 파일에 쓸 글자. 빈 칸(None · NaN)은 빈 문자열, 나머지는 B-4가 준 값 그대로 문자열로."""
+    # TODO(확인 필요): 숫자 칸의 소수 자릿수 · 지수 표기 · 참/거짓 표기 — 지금은 B-4가 준 값의 파이썬 문자열 그대로
+    #   (1.0 → "1.0", 1e-05 → "1e-05"). RAW 시트가 기대하는 표기가 정해지면 여기서 맞춘다.
+    if value is None or (isinstance(value, float) and value != value):  # NaN = pandas 빈 칸
         return ""
-    if isinstance(value, float) and value != value:  # NaN (pandas 빈 칸)
-        return ""
+    if isinstance(value, (dict, list, tuple, set)):
+        raise _bad_merge_table("칸에 표가 아닌 값(목록 · 사전)이 있습니다.")
     return str(value)
 
 
 def build_merge_table(raw: Mapping[str, Any]) -> Table:
-    """병합 결과 표 → 내보낼 표. 칼럼 · 행 순서를 바꾸지 않는다 (RAW 시트 배치 그대로)."""
+    """병합 결과 표 → 내보낼 표. 칼럼 · 행 순서를 바꾸지 않는다 (RAW 시트 배치 그대로).
+
+    칸이 모자란 행은 뒤를 빈 칸으로 채우고(모듈이 끝의 빈 칸을 생략한 경우), 칸이 넘치는 행은 거부한다.
+    """
     columns = [str(c) for c in raw.get("columns") or []]
-    rows = [[_cell(v) for v in row] for row in raw.get("rows") or []]
+    if not columns:
+        raise _bad_merge_table("칼럼이 없습니다.")
+    rows: list[list[str]] = []
+    for line, row in enumerate(raw.get("rows") or [], start=1):
+        if len(row) > len(columns):
+            raise _bad_merge_table(f"{line}행의 칸 수({len(row)})가 칼럼 수({len(columns)})보다 많습니다.")
+        rows.append([_cell(v) for v in row] + [""] * (len(columns) - len(row)))
     return Table(columns=columns, rows=rows, skipped_unconfirmed=0)
 
 
@@ -159,6 +173,14 @@ def render(table: Table, fmt: str) -> str:
     return buf.getvalue()
 
 
+def _encodable(text: str, encoding: str) -> bool:
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def encode(table: Table, fmt: str, encoding: str) -> bytes:
     """파일 내용. cp949로 못 쓰는 글자가 있으면 깨진 파일 대신 400 — 어느 기기 · 칼럼인지 알려 준다."""
     try:
@@ -166,17 +188,16 @@ def encode(table: Table, fmt: str, encoding: str) -> bytes:
     except UnicodeEncodeError:
         pass
     fields: dict[str, str] = {}
-    for column in table.columns:  # 병합 결과 칼럼 이름은 모듈이 정하므로 머리글도 확인한다
-        try:
-            column.encode(encoding)
-        except UnicodeEncodeError:
-            fields[f"columns.{column}"] = f"{encoding}로 쓸 수 없는 글자가 있습니다. utf-8로 내보내세요."
+    message = f"{encoding}로 쓸 수 없는 글자가 있습니다. utf-8로 내보내세요."
+    # 칸 이름 = 칼럼 이름. 병합 결과는 모듈이 칼럼 이름을 정해 겹칠 수 있으므로 겹치면 `#순번`을 붙인다
+    names = [c if table.columns.count(c) == 1 else f"{c}#{i}" for i, c in enumerate(table.columns, start=1)]
+    for name, column in zip(names, table.columns):  # 병합 결과 칼럼 이름은 모듈이 정하므로 머리글도 확인한다
+        if not _encodable(column, encoding):
+            fields[f"columns.{name}"] = message
     for line, row in enumerate(table.rows, start=1):  # photo_values는 기기 번호, merge_raw는 행 번호
-        for column, cell in zip(table.columns, row):
-            try:
-                cell.encode(encoding)
-            except UnicodeEncodeError:
-                fields[f"rows.{line}.{column}"] = f"{encoding}로 쓸 수 없는 글자가 있습니다. utf-8로 내보내세요."
+        for name, cell in zip(names, row):
+            if not _encodable(cell, encoding):
+                fields[f"rows.{line}.{name}"] = message
     raise validation_error(fields, f"{encoding}로 쓸 수 없는 값이 있습니다.")
 
 
@@ -192,7 +213,9 @@ def _validate(body: ExportCreate, category: Mapping[str, Any] | None) -> list[st
     is_merge_category = MERGE_RAW in export_spec
     if body.kind == "photo_values" and (not category.get("items") or is_merge_category):
         fields["kind"] = "이 분류는 사진 업무가 아닙니다."
-    elif body.kind == MERGE_RAW:
+    if body.kind != MERGE_RAW and body.merge_id is not None:
+        fields["merge_id"] = "merge_id는 kind=merge_raw일 때만 씁니다."
+    if body.kind == MERGE_RAW:
         if not is_merge_category:
             fields["kind"] = "이 분류는 병합 결과(merge_raw)를 내보내지 않습니다."
         elif not body.merge_id:
@@ -232,8 +255,7 @@ def create_export(
 
     merge_pk: int | None = None
     if body.kind == MERGE_RAW:
-        assert body.merge_id is not None  # _validate에서 확인
-        merge_pk, raw = merge_raw_table(db, case.id, body.merge_id)
+        merge_pk, raw = merge_raw_table(db, case.id, body.merge_id or "")  # 빈 값은 _validate에서 400
         table = build_merge_table(raw)
     else:
         photos = db.scalars(

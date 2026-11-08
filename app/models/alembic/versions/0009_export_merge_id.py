@@ -20,10 +20,14 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     with op.batch_alter_table("exports") as batch:
         batch.add_column(sa.Column("merge_id", sa.Integer(), nullable=True))
-        batch.create_foreign_key("fk_exports_merge_id_merges", "merges", ["merge_id"], ["id"])
+        batch.create_foreign_key(
+            "fk_exports_merge_id_merges", "merges", ["merge_id"], ["id"], ondelete="SET NULL"
+        )
+        batch.create_index("ix_exports_merge_id", ["merge_id"])
 
 
 def downgrade() -> None:
     with op.batch_alter_table("exports") as batch:
+        batch.drop_index("ix_exports_merge_id")
         batch.drop_constraint("fk_exports_merge_id_merges", type_="foreignkey")
         batch.drop_column("merge_id")

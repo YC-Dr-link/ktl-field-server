@@ -9,8 +9,8 @@ import sqlite3
 
 import pytest
 
-from app.services.exports import build_merge_table, encode
 from app.api.errors import ApiError
+from app.services.exports import build_merge_table, encode
 from tests.test_merges import ADMIN, _file, _merge, _new_case, _wait, env  # noqa: F401  (env는 fixture)
 
 
@@ -115,5 +115,31 @@ def test_cp949_unencodable_column_names_reported() -> None:
     assert encode(table, "csv", "utf-8").decode("utf-8").startswith("code,농도😀\r\n")
 
 
-def test_nan_cell_is_blank() -> None:
-    assert build_merge_table({"columns": ["v"], "rows": [[float("nan")], [0.5]]}).rows == [[""], ["0.5"]]
+def test_duplicate_column_names_get_distinct_error_keys() -> None:
+    table = build_merge_table({"columns": ["v😀", "v😀"], "rows": [["a😀", "b😀"]]})
+    with pytest.raises(ApiError) as err:
+        encode(table, "txt", "cp949")
+    assert set(err.value.detail["fields"]) == {"columns.v😀#1", "columns.v😀#2", "rows.1.v😀#1", "rows.1.v😀#2"}
+
+
+def test_merge_table_shape() -> None:
+    # 빈 칸(None · NaN)은 빈 문자열, 칸이 모자란 행은 뒤를 빈 칸으로 채운다
+    table = build_merge_table({"columns": ["code", "v1", "v2"], "rows": [["ZDS", float("nan")], ["SDS", 0.5, None]]})
+    assert table.rows == [["ZDS", "", ""], ["SDS", "0.5", ""]]
+    for raw in (
+        {"columns": [], "rows": [["ZDS"]]},  # 칼럼 없음
+        {"columns": ["code"], "rows": [["ZDS", "값"]]},  # 칸이 넘침
+        {"columns": ["code", "v1"], "rows": [["ZDS", [1, 2]]]},  # 표가 아닌 값
+    ):
+        with pytest.raises(ApiError) as err:
+            build_merge_table(raw)
+        assert "merge_id" in err.value.detail["fields"]
+
+
+def test_merge_id_only_with_merge_raw(env) -> None:
+    admin, _ = env
+    sampling = _new_case(admin, category="sampling")
+    body = {"kind": "photo_values", "format": "csv", "merge_id": "mg_1"}
+    res = admin.post(f"{ADMIN}/cases/{sampling}/exports", json=body)
+    assert res.status_code == 400
+    assert "merge_id" in res.json()["error"]["detail"]["fields"]
