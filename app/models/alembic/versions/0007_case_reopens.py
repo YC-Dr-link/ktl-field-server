@@ -1,7 +1,7 @@
 """case reopen history
 
-Revision ID: 0006_case_reopens
-Revises: 0005_value_edits
+Revision ID: 0007_case_reopens
+Revises: 0006_exports
 Create Date: 2026-11-08 10:00:00
 """
 from __future__ import annotations
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0006_case_reopens"
-down_revision: str | None = "0005_value_edits"
+revision: str = "0007_case_reopens"
+down_revision: str | None = "0006_exports"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
