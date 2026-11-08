@@ -14,6 +14,7 @@ from app.api.categories import router as categories_router
 from app.api.cases import router as cases_router
 from app.api.events import router as events_router
 from app.api.exports import router as exports_router
+from app.api.merges import router as merges_router
 from app.api.photos import router as photos_router
 from app.api.security import require_session
 
@@ -30,5 +31,6 @@ admin_api_router.include_router(photos_router)
 admin_api_router.include_router(events_router)
 admin_api_router.include_router(admin_router)
 admin_api_router.include_router(exports_router)  # 관리 전용 (휴대폰 API에는 없음)
+admin_api_router.include_router(merges_router)
 
 __all__ = ["admin_api_router", "mobile_api_router"]

@@ -1,4 +1,4 @@
-"""원본 보관소 (REQ-B1-03 · REQ-COM-03): 받은 그대로 저장 → SHA-256 기록 → 읽기 전용.
+"""원본 보관소 (REQ-B1-03 · REQ-B1-09 · REQ-COM-03): 사진·로거 파일을 받은 그대로 저장 → SHA-256 기록 → 읽기 전용.
 
 원본은 서버가 다시 쓰지 않는다. 회전 보정·썸네일 등 사본은 `derived/`에 따로 만든다 (REQ-B1-12).
 """
@@ -13,6 +13,9 @@ from typing import BinaryIO
 
 MAX_PHOTO_BYTES = 20 * 1024 * 1024  # 02 §1.1: 413 FILE_TOO_LARGE — 사진 20 MB 초과
 TOO_LARGE_MESSAGE = "사진이 20 MB를 넘습니다."
+# TODO(확인 필요): 로거 파일 크기 상한은 문서에 없다 — GL240 1분 간격 하루치가 수백 KB라 넉넉히 50 MB로 둠
+MAX_DATA_FILE_BYTES = 50 * 1024 * 1024
+DATA_FILE_TOO_LARGE_MESSAGE = "파일이 50 MB를 넘습니다."
 _CHUNK = 1024 * 1024
 _READ_ONLY = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
 
@@ -22,6 +25,10 @@ class FileTooLarge(Exception):
 
 
 class NotAnImage(Exception):
+    pass
+
+
+class EmptyFile(Exception):
     pass
 
 
@@ -63,7 +70,7 @@ def remove_original(storage_dir: Path, rel_path: str) -> None:
 
 
 def store_original(src: BinaryIO, storage_dir: Path, folder: str, base_name: str) -> StoredOriginal:
-    """`src`를 끝까지 읽어 `originals/<folder>/<base_name><ext>`에 저장하고 읽기 전용으로 만든다.
+    """사진 `src`를 끝까지 읽어 `originals/<folder>/<base_name><ext>`에 저장하고 읽기 전용으로 만든다.
 
     - 20 MB를 넘으면 FileTooLarge, 이미지가 아니면 NotAnImage (둘 다 파일을 남기지 않는다)
     - 같은 이름이 있으면 `_2`, `_3` …을 붙인다 (`xb`로 열어 동시 업로드에도 기존 원본을 덮어쓰지 않는다)
@@ -72,7 +79,24 @@ def store_original(src: BinaryIO, storage_dir: Path, folder: str, base_name: str
     ext = detect_image_ext(first[:16])
     if ext is None:
         raise NotAnImage
-    target_dir = storage_dir / "originals" / folder
+    return _store(first, src, storage_dir, storage_dir / "originals" / folder, base_name, ext, MAX_PHOTO_BYTES)
+
+
+def store_data_file(src: BinaryIO, storage_dir: Path, folder: str, base_name: str, ext: str) -> StoredOriginal:
+    """가스·라돈 로거 파일을 받은 그대로 `originals/<folder>/files/`에 저장하고 읽기 전용으로 만든다.
+
+    형식 판별은 B-4 Selector `detect()`가 한다. 비어 있으면 EmptyFile, 50 MB를 넘으면 FileTooLarge.
+    """
+    first = src.read(_CHUNK)
+    if not first:
+        raise EmptyFile
+    target_dir = storage_dir / "originals" / folder / "files"
+    return _store(first, src, storage_dir, target_dir, base_name, ext, MAX_DATA_FILE_BYTES)
+
+
+def _store(
+    first: bytes, src: BinaryIO, storage_dir: Path, target_dir: Path, base_name: str, ext: str, max_bytes: int
+) -> StoredOriginal:
     target_dir.mkdir(parents=True, exist_ok=True)
     out, final = _open_new(target_dir, base_name, ext)
     digest = hashlib.sha256()
@@ -82,7 +106,7 @@ def store_original(src: BinaryIO, storage_dir: Path, folder: str, base_name: str
             chunk = first
             while chunk:
                 size += len(chunk)
-                if size > MAX_PHOTO_BYTES:
+                if size > max_bytes:
                     raise FileTooLarge
                 digest.update(chunk)
                 out.write(chunk)

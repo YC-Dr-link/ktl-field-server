@@ -15,9 +15,11 @@ import uvicorn
 
 from app.api import admin_api_router, mobile_api_router
 from app.api.errors import register_error_handlers
-from app.api.upload_limit import PhotoUploadSizeLimit
+from app.api.upload_limit import UploadSizeLimit
 from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
 from app.services import ensure_storage_dirs
+from app.worker.merges import MergeRunner
+from app.worker.selector import DEFAULT_LOADER
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -57,16 +59,30 @@ def _configure_state(app: FastAPI, cfg: ServerSettings, *, default_actor: str, p
 def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다."""
     cfg = settings or load_settings()
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        runner: MergeRunner = app.state.merge_runner
+        runner.recover()  # 이전 실행에서 끝나지 못한 병합은 failed로
+        try:
+            yield
+        finally:
+            runner.shutdown()
+
     admin = FastAPI(
         title="KTL Field Server - Admin API",
         version="0.1.0",
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=_lifespan,
     )
     _configure_state(admin, cfg, default_actor="admin", phone_only=False)
+    # 가스·라돈 선별/병합 (REQ-B1-09) — 관리 API에만 있다
+    admin.state.selector_loader = DEFAULT_LOADER
+    admin.state.merge_runner = MergeRunner(admin.state.session_factory, cfg.storage_dir)
     register_error_handlers(admin)
     # 나중에 넣은 미들웨어가 바깥 — 루프백 검사가 먼저, 그다음 사진 본문 크기 제한
-    admin.add_middleware(PhotoUploadSizeLimit)
+    admin.add_middleware(UploadSizeLimit)
     admin.add_middleware(LoopbackOnlyMiddleware)
     admin.include_router(admin_api_router)
 
@@ -115,7 +131,7 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
     _configure_state(mobile, cfg, default_actor="anonymous", phone_only=True)
     register_error_handlers(mobile)
     mobile.include_router(mobile_api_router)
-    mobile.add_middleware(PhotoUploadSizeLimit)
+    mobile.add_middleware(UploadSizeLimit)
 
     mobile_static = cfg.static_dir / "mobile"
     if mobile_static.is_dir():
