@@ -31,6 +31,7 @@ from app.models import Case as CaseRow
 from app.models import local_now
 from app.models.exports import Export as ExportRow
 from app.models.photos import Photo as PhotoRow
+from app.services import audit
 from app.services.cases import CategoryLookup, format_case_id, parse_case_id
 from app.services.merges import merge_raw_table
 from app.services.values import CONFIRMED
@@ -285,12 +286,17 @@ def create_export(
     )
     try:
         db.add(row)
+        db.flush()
+        audit.record(
+            db, "export.create", format_export_id(row.id), actor=actor, case_pk=case.id,
+            detail={"kind": body.kind, "format": body.format, "file_name": row.file_name},
+        )
         db.commit()
     except BaseException:
         db.rollback()
         path.unlink(missing_ok=True)
         raise
-    # TODO(#6): SSE export.done 알림은 #6 병합 후 여기서 보낸다. TODO(#12): 작업 로그(해시 체인) 기록.
+    # TODO(#6): SSE export.done 알림은 #6 병합 후 여기서 보낸다.
     return to_export(row)
 
 

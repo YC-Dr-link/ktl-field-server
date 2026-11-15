@@ -24,7 +24,7 @@ from app.models import Case as CaseRow
 from app.models import local_now
 from app.models.data import DataFile as DataFileRow
 from app.models.data import Merge as MergeRow
-from app.services import storage
+from app.services import audit, storage
 from app.services.auth import parse_id
 from app.services.cases import CategoryLookup, format_case_id, parse_case_id
 from app.worker.selector import (
@@ -164,6 +164,11 @@ def upload_file(
         )
         if still_open.rowcount != 1:
             raise ApiError(409, "CASE_COMPLETED", "완료된 건은 바꿀 수 없습니다. 관리 화면에서 다시 여세요.")
+        db.flush()
+        audit.record(
+            db, "file.upload", format_file_id(row.id), actor=actor, case_pk=case.id,
+            detail={"name": name, "sha256": stored.sha256, "detected": detected},
+        )
         db.commit()
     except BaseException:
         db.rollback()
@@ -228,6 +233,11 @@ def create_merge(db: Session, case_id: str, lookup: CategoryLookup, body: MergeC
         created_at=local_now(),
     )
     db.add(row)
+    db.flush()
+    audit.record(
+        db, "merge.create", format_merge_id(row.id), actor=actor, case_pk=case.id,
+        detail={"selector": body.selector, "file_ids": body.file_ids},
+    )
     db.commit()
     return to_merge(row)
 
@@ -264,7 +274,7 @@ def run_merge(
         paths_by_id = {format_file_id(pk): str(storage_dir / files[pk].original_path) for pk in row.file_ids if pk in files}
         paths = list(paths_by_id.values())
         options = _selector_options(row.options or {}, paths_by_id)
-        selector, missing = row.selector, len(paths) != len(row.file_ids)
+        selector, missing, case_pk = row.selector, len(paths) != len(row.file_ids), row.case_id
         row.status = "running"
         db.commit()
 
@@ -283,9 +293,14 @@ def run_merge(
     for attempt in range(1, _FINISH_ATTEMPTS + 1):
         try:
             with session_factory() as db:
-                db.execute(
+                finished = db.execute(
                     update(MergeRow).where(MergeRow.id == merge_pk, MergeRow.status == "running").values(**result)
                 )
+                if finished.rowcount == 1:
+                    audit.record(
+                        db, f"merge.{result['status']}", format_merge_id(merge_pk), actor=audit.SYSTEM_ACTOR,
+                        case_pk=case_pk, detail={"error": result["error"]},
+                    )
                 db.commit()
             break
         except OperationalError:  # DB 잠김 등 — 결과를 못 쓰면 running에 묶이므로 몇 번 더 시도

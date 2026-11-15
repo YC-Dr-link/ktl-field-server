@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.errors import ApiError, validation_error
 from app.models import local_now
 from app.models.auth import Client, LoginSession, PairCode, Tester
+from app.services import audit
 
 PAIR_CODE_TTL = timedelta(minutes=5)
 CLIENT_COOKIE_MAX_AGE = 90 * 24 * 3600
@@ -109,6 +110,8 @@ def pair_client(db: Session, code: str, device_name: str) -> tuple[Client, str]:
     token, token_hash = new_token()
     client = Client(device_name=device_name, token_hash=token_hash, paired_at=now)
     db.add(client)
+    db.flush()
+    audit.record(db, "client.pair", f"cl_{client.id}", actor="anonymous", detail={"device_name": device_name})
     db.commit()
     return client, token
 

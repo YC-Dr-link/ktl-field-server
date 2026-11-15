@@ -13,6 +13,7 @@ from app.api.schemas import Case, CaseCreate, CaseSummary, ItemStatus, Progress,
 from app.models import Case as CaseRow
 from app.models import CaseReopen, local_now, to_iso
 from app.models.photos import Photo as PhotoRow
+from app.services import audit
 from app.services.text import text_problem
 
 CASE_ID_PREFIX = "case_"
@@ -164,6 +165,11 @@ def create_case(
         created_by=actor,
     )
     db.add(row)
+    db.flush()
+    audit.record(
+        db, "case.create", format_case_id(row.id), actor=actor, case_pk=row.id,
+        detail={"receipt_no": row.receipt_no, "category": row.category, "unit_count": row.unit_count},
+    )
     db.commit()
     return to_case(row, build_units(category, row.unit_count, {}))
 
@@ -226,6 +232,7 @@ def reopen_case(db: Session, case_id: str, reason: str, category_lookup: Categor
             # TODO(확인 필요): 이미 열린 건을 다시 열기 — 계약에 코드가 없어 400 VALIDATION
             raise validation_error({"status": "완료된 건만 다시 열 수 있습니다."}, "이미 열려 있는 건입니다.")
         db.add(CaseReopen(case_id=pk, reason=reason, reopened_by=actor, reopened_at=now))
+        audit.record(db, "case.reopen", case_id, actor=actor, case_pk=pk, detail={"reason": reason})
         db.commit()
     except BaseException:
         db.rollback()

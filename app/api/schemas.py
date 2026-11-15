@@ -240,3 +240,19 @@ class Merge(BaseModel):
     meta: dict[str, Any]
     warnings: list[PhotoWarning]
     error: str | None
+
+
+class AuditEntry(BaseModel):
+    seq: int
+    at: str = Field(examples=["2026-10-29T14:03:11+09:00"])
+    actor: str = Field(examples=["ts_2"])
+    action: str = Field(examples=["value.edit"])
+    target: str = Field(examples=["ph_301"])
+    detail: dict[str, Any]
+    prev_hash: str
+    hash: str
+
+
+class AuditLog(BaseModel):
+    chain_ok: bool
+    items: list[AuditEntry]

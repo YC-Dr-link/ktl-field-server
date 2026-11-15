@@ -16,7 +16,7 @@ from app.api.schemas import Photo
 from app.models import Case as CaseRow
 from app.models import local_now, to_iso
 from app.models.photos import Photo as PhotoRow
-from app.services import storage
+from app.services import audit, storage
 from app.services.cases import CategoryLookup, format_case_id, format_photo_id, parse_case_id
 
 RETAKE_REASON = "다시 찍기"  # 02 §2.3: 같은 칸에 새 사진을 올리면 이전 사진은 deleted(사유 "다시 찍기")
@@ -123,7 +123,7 @@ def upload_photo(
 
     try:
         # 같은 칸의 이전 사진은 다시 찍기로 deleted (원본 파일은 그대로 둔다)
-        db.execute(
+        retaken = db.execute(
             update(PhotoRow)
             .where(
                 PhotoRow.case_id == case.id,
@@ -156,6 +156,11 @@ def upload_photo(
         )
         if still_open.rowcount != 1:
             raise ApiError(409, "CASE_COMPLETED", "완료된 건에는 사진을 추가할 수 없습니다.")
+        db.flush()
+        audit.record(
+            db, "photo.upload", format_photo_id(row.id), actor=actor, case_pk=case.id,
+            detail={"unit_index": unit_index, "item_key": item_key, "sha256": stored.sha256, "retaken": retaken.rowcount},
+        )
         db.commit()
     except IntegrityError:
         # 같은 client_upload_id가 동시에 두 번 들어온 경우 — 늦은 쪽 원본은 지우고 먼저 저장된 사진을 돌려준다

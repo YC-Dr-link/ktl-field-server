@@ -9,13 +9,14 @@ from sqlalchemy.orm import Session
 from app.api.auth import ClientOut, TesterList, TesterOut
 from app.api.deps import get_actor, get_category_lookup
 from app.api.errors import not_found
-from app.api.schemas import Case, ReopenRequest, ReviewQueue, Settings
+from app.api.schemas import AuditEntry, AuditLog, Case, ReopenRequest, ReviewQueue, Settings
 from app.models import get_db, to_iso
 from app.models.auth import Client, Tester
+from app.services import audit
 from app.services import auth as auth_service
 from app.services import cases as case_service
 from app.services import settings as settings_service
-from app.services.cases import CategoryLookup
+from app.services.cases import CategoryLookup, parse_case_id
 from app.services.review import review_queue
 
 router = APIRouter(tags=["admin"])
@@ -63,13 +64,14 @@ def list_clients(db: Session = Depends(get_db)) -> ClientList:
 
 
 @router.delete("/clients/{client_id}", status_code=204, summary="단말 해제 (이후 요청 403)")
-def revoke_client(client_id: str, db: Session = Depends(get_db)) -> Response:
+def revoke_client(client_id: str, db: Session = Depends(get_db), actor: str = Depends(get_actor)) -> Response:
     pk = auth_service.parse_id(client_id, "cl")
     client = db.get(Client, pk) if pk is not None else None
     if client is None or client.revoked_at is not None:
         raise not_found("단말을 찾을 수 없습니다.")
     client.revoked_at = auth_service.local_now()
     auth_service.end_sessions(db, client_id=client.id)
+    audit.record(db, "client.revoke", client_id, actor=actor)
     db.commit()
     return Response(status_code=204)
 
@@ -80,15 +82,19 @@ def list_testers(db: Session = Depends(get_db)) -> TesterList:
 
 
 @router.post("/testers", status_code=201, response_model=TesterOut, summary="시험자 추가")
-def create_tester(body: TesterCreate, db: Session = Depends(get_db)) -> TesterOut:
+def create_tester(body: TesterCreate, db: Session = Depends(get_db), actor: str = Depends(get_actor)) -> TesterOut:
     tester = Tester(name=body.name, pin_hash=auth_service.hash_pin(body.pin), failed_count=0, active=True)
     db.add(tester)
+    db.flush()
+    audit.record(db, "tester.create", f"ts_{tester.id}", actor=actor, detail={"name": body.name})
     db.commit()
     return TesterOut.of(tester, full=True)
 
 
 @router.patch("/testers/{tester_id}", response_model=TesterOut, summary="시험자 수정 (이름, PIN 재설정, 잠금 해제, 비활성)")
-def update_tester(tester_id: str, body: TesterPatch, db: Session = Depends(get_db)) -> TesterOut:
+def update_tester(
+    tester_id: str, body: TesterPatch, db: Session = Depends(get_db), actor: str = Depends(get_actor)
+) -> TesterOut:
     pk = auth_service.parse_id(tester_id, "ts")
     tester = db.get(Tester, pk) if pk is not None else None
     if tester is None:
@@ -103,6 +109,9 @@ def update_tester(tester_id: str, body: TesterPatch, db: Session = Depends(get_d
         tester.active = body.active
     if body.pin is not None or body.active is False:  # 다시 활성화해도 예전 로그인은 살아나지 않게
         auth_service.end_sessions(db, tester_id=tester.id)
+    # PIN 값은 남기지 않고 바꿨다는 사실만
+    changes = body.model_dump(exclude_none=True, exclude={"pin"}) | ({"pin": "reset"} if body.pin else {})
+    audit.record(db, "tester.update", tester_id, actor=actor, detail=changes)
     db.commit()
     return TesterOut.of(tester, full=True)
 
@@ -136,5 +145,11 @@ def get_settings(db: Session = Depends(get_db)) -> Settings:
 
 
 @router.put("/settings", response_model=Settings, summary="설정 변경 (전체 교체, 빠진 칸은 기본값)")
-def put_settings(body: Settings, db: Session = Depends(get_db)) -> Settings:
-    return settings_service.update_settings(db, body)
+def put_settings(body: Settings, db: Session = Depends(get_db), actor: str = Depends(get_actor)) -> Settings:
+    return settings_service.update_settings(db, body, actor=actor)
+
+
+@router.get("/audit", response_model=AuditLog, summary="작업 로그 + 해시 체인 검증")
+def get_audit(case_id: str | None = None, db: Session = Depends(get_db)) -> AuditLog:
+    chain_ok, rows = audit.read_log(db, parse_case_id(case_id) if case_id else None)
+    return AuditLog(chain_ok=chain_ok, items=[AuditEntry.model_validate(r, from_attributes=True) for r in rows])

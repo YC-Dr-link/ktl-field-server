@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import Settings
 from app.models import SystemSetting, local_now
+from app.services import audit
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def read_settings(db: Session) -> Settings:
     return Settings(**values)
 
 
-def update_settings(db: Session, body: Settings) -> Settings:
+def update_settings(db: Session, body: Settings, *, actor: str) -> Settings:
     """전체 교체 (PUT) — 빠진 칸은 기본값. `photo_retention_days: null`은 '자동 삭제 안 함'."""
     now = local_now()
     rows = [{"key": key, "value": json.dumps(value), "updated_at": now} for key, value in body.model_dump().items()]
@@ -58,6 +59,7 @@ def update_settings(db: Session, body: Settings) -> Settings:
     )
     try:
         db.execute(stmt)
+        audit.record(db, "settings.update", "settings", actor=actor, detail=body.model_dump())
         db.commit()
     except BaseException:
         db.rollback()

@@ -18,6 +18,7 @@ from app.models import Case as CaseRow
 from app.models import local_now, to_iso
 from app.models.photos import Photo as PhotoRow
 from app.models.photos import ValueEdit
+from app.services import audit
 from app.services.cases import PHOTO_ID_PREFIX
 from app.services.photos import to_photo
 from app.services.text import text_problem
@@ -137,6 +138,11 @@ def patch_values(db: Session, photo_id: str, body: ValuesPatch, *, actor: str) -
                         edited_at=now,
                     )
                 )
+                audit.record(
+                    db, "value.edit", photo_id, actor=actor, case_pk=photo.case_id,
+                    detail={"key": change.key, "old": str(value.get("value") or ""), "new": change.value,
+                            "reason": (change.reason or "").strip()},
+                )
                 value["value"] = change.value
                 dirty = True
             if body.confirm:
@@ -148,6 +154,9 @@ def patch_values(db: Session, photo_id: str, body: ValuesPatch, *, actor: str) -
         if not dirty:  # 바뀐 것이 없으면 쓰지 않는다 (건 갱신 시각 · 알림이 헛돌지 않게)
             db.rollback()
             return to_photo(photo)
+        if body.confirm:
+            keys = [change.key for _, change in targets]
+            audit.record(db, "value.confirm", photo_id, actor=actor, case_pk=photo.case_id, detail={"keys": keys})
         photo.values = stored  # JSON 칸은 새 목록을 넣어야 바뀐 것으로 저장된다
         case.updated_at = now
         db.commit()
