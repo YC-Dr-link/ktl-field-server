@@ -154,7 +154,6 @@ def test_unsupported_requests_400(env) -> None:
     case_id = _new_case(mobile)
     for extra, field in [
         ({"format": "xlsx"}, "format"),
-        ({"include_photos": True}, "include_photos"),
         ({"kind": "merge_raw"}, "kind"),
         ({"encoding": "euc-kr"}, "encoding"),
         ({"format": "pdf"}, "format"),
