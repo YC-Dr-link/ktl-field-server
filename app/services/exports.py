@@ -304,13 +304,10 @@ def create_export(
     now = local_now()
     base_name = f"{case.receipt_no}_{_UNSAFE_NAME.sub('_', case.category)}_{now:%Y%m%d-%H%M%S}"
     values_name = f"{base_name}.{body.format}"
-    target_dir = storage_dir / "exports" / format_case_id(case.id)
+    ext, write = f".{body.format}", lambda out: out.write(data)
     if body.include_photos:
-        path = _write_new(
-            target_dir, base_name, ".zip", lambda out: _write_zip(out, storage_dir, case.receipt_no, values_name, data, photos)
-        )
-    else:
-        path = _write_new(target_dir, base_name, f".{body.format}", lambda out: out.write(data))
+        ext, write = ".zip", lambda out: _write_zip(out, storage_dir, case.receipt_no, values_name, data, photos)
+    path = _write_new(storage_dir / "exports" / format_case_id(case.id), base_name, ext, write)
     row = ExportRow(
         case_id=case.id,
         kind=body.kind,
