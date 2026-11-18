@@ -49,13 +49,15 @@ def read_one(readers: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     from ktl_contract import ReadError
 
     from app.modules import get_reader
+    from app.worker.rotate import make_rotated_copy
 
     start = time.monotonic()
     try:
         name = job["reader"]
         if name not in readers:
             readers[name] = get_reader(name)
-        values, warnings = _plain_result(readers[name].read(job["image_path"], job["item_key"]))
+        image_path = make_rotated_copy(job["image_path"])  # 02 §3.2: Reader는 회전 보정한 사본을 받는다
+        values, warnings = _plain_result(readers[name].read(image_path, job["item_key"]))
         return {"ok": True, "values": values, "warnings": warnings, "read_ms": _elapsed_ms(start)}
     except _BadResult as exc:
         return {"ok": False, "error": f"판독 모듈 결과 형식 오류: {exc}", "read_ms": _elapsed_ms(start)}

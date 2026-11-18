@@ -17,6 +17,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pyyaml>=6.0.0",
     "segno>=1.6.0",
+    "pillow>=10.0.0",  # 회전 보정 사본 (REQ-B1-12)
 ]
 
 [project.optional-dependencies]
