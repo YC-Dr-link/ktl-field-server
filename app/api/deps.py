@@ -8,10 +8,16 @@ from fastapi import Request
 
 from app.models import ServerSettings
 from app.modules import find_category
+from app.services.events import EventBroker
 
 
 def get_settings(request: Request) -> ServerSettings:
     return request.app.state.settings
+
+
+def get_event_broker(request: Request) -> EventBroker:
+    """SSE 알림 배달부 — 휴대폰 앱과 관리 앱이 같은 것을 공유한다 (app/main.py)."""
+    return request.app.state.event_broker
 
 
 def is_phone_app(request: Request) -> bool:
@@ -20,11 +26,9 @@ def is_phone_app(request: Request) -> bool:
 
 
 def get_actor(request: Request) -> str:
-    """요청한 사람 (이력·created_by용).
-
-    TODO(REQ-B1-10): 휴대폰은 ktl_session 쿠키의 시험자 ID(`ts_N`)로 바꾼다. 로그인 구현 전까지는 앱 기본값.
-    """
-    return request.app.state.default_actor
+    """요청한 사람 (이력·created_by용). 휴대폰은 로그인한 시험자 ID(`ts_N`), 관리 화면은 앱 기본값."""
+    tester = getattr(request.state, "tester", None)
+    return f"ts_{tester.id}" if tester is not None else request.app.state.default_actor
 
 
 def get_category_lookup(request: Request) -> Callable[[str], Mapping[str, Any] | None]:

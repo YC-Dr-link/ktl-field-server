@@ -4,12 +4,52 @@ samples/
 견본/
 storage/
 *.local.*
+# 사진 업로드를 손으로 시험하다 남긴 사진이 커밋되지 않게 (data-guard와 같은 기준: synthetic/ · docs/images/ · assets/만 허용)
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+*.webp
+*.bmp
+*.tif
+*.tiff
+# 로거 파일 · 내보내기 결과 · 견본 문서 (data-guard와 같은 기준: synthetic/ 아래만 허용)
+*.csv
+*.tsv
+*.xlsx
+*.xlsm
+*.xls
+*.hwp
+*.hwpx
+*.zip
+*.7z
+*.txt
+# 스캔 문서 (data-guard: docs/ 아래만 허용)
+*.pdf
+!docs/**/*.pdf
+# 내보낸 CSV/TXT를 엑셀 · 리브레오피스로 열면 옆에 생기는 잠금 파일
+~$*
+.~lock.*#
+# 가스·라돈 로거 원본 (GL240 .gbd 바이너리 등) — 손으로 시험한 파일이 커밋되지 않게
+*.gbd
+*.dat
+!requirements*.txt
+!LICENSE.txt
+!NOTICE.txt
+!**/synthetic/**
+!docs/images/**
+!assets/**
 
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+# 버전별 가상환경 (.venv312 등) — uv가 아닌 python -m venv로 만들면 안쪽 .gitignore가 없다
+.venv*/
+venv*/
+.python-version
 src/
 *.egg-info/
 .eggs/
@@ -18,6 +58,8 @@ src/
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.xml
+.hypothesis/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
@@ -60,7 +102,15 @@ Thumbs.db
 desktop.ini
 GEMINI.md
 Gemini.md
-지시서-*.md
+*지시서-*.md
 .claude/
 .cursor/
 .gemini/
+.codex/
+.aider*
+.windsurf/
+# Windows
+$RECYCLE.BIN/
+*.lnk
+# 이 레포를 여러 작업 폴더(git worktree)로 나눠 쓸 때 레포 안에 만든 폴더
+.worktrees/

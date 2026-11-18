@@ -5,15 +5,19 @@ from collections.abc import Callable, Mapping
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.api.errors import not_found, validation_error
 from app.api.schemas import Case, CaseCreate, CaseSummary, ItemStatus, Progress, Unit, UnitItem
 from app.models import Case as CaseRow
-from app.models import local_now, to_iso
+from app.models import CaseReopen, local_now, to_iso
+from app.models.photos import Photo as PhotoRow
+from app.services import audit
+from app.services.text import text_problem
 
 CASE_ID_PREFIX = "case_"
+PHOTO_ID_PREFIX = "ph_"
 _CASE_ID_RE = re.compile(r"^case_([1-9]\d{0,17})$")
 
 # (unit_index, item_key) → (photo_id, 칸 상태)
@@ -23,6 +27,10 @@ CategoryLookup = Callable[[str], Mapping[str, Any] | None]
 
 def format_case_id(pk: int) -> str:
     return f"{CASE_ID_PREFIX}{pk}"
+
+
+def format_photo_id(pk: int) -> str:
+    return f"{PHOTO_ID_PREFIX}{pk}"
 
 
 def parse_case_id(case_id: str) -> int:
@@ -83,13 +91,23 @@ def compute_progress(units: list[Unit]) -> Progress:
     )
 
 
-def _photo_slots(_db: Session, _row: CaseRow) -> dict[tuple[int, str], tuple[str, ItemStatus]]:
-    """건에 올라온 사진의 칸별 상태.
-
-    사진 테이블은 사진 업로드 이슈(REQ-B1-03)에서 생긴다. 그때 칸마다 최신(deleted 아닌) 사진을 골라
-    `item_status(photo.status, [v.status for v in photo.values])`로 채운다. 지금은 사진이 없으므로 모두 empty.
-    """
-    return {}
+def _photo_slots(db: Session, case_ids: list[int]) -> dict[int, dict[tuple[int, str], tuple[str, ItemStatus]]]:
+    """건별로 올라온 사진의 칸별 상태 — 칸마다 최신(deleted 아닌) 사진 하나. 여러 건을 쿼리 한 번에."""
+    result: dict[int, dict[tuple[int, str], tuple[str, ItemStatus]]] = {pk: {} for pk in case_ids}
+    if not case_ids:
+        return result
+    photos = db.scalars(
+        select(PhotoRow)
+        .where(PhotoRow.case_id.in_(case_ids), PhotoRow.status != "deleted")
+        .order_by(PhotoRow.id)
+    )
+    for photo in photos:  # id 오름차순이므로 칸마다 마지막 사진이 남는다
+        statuses = [str(v.get("status")) for v in photo.values or []]
+        result[photo.case_id][(photo.unit_index, photo.item_key)] = (
+            format_photo_id(photo.id),
+            item_status(photo.status, statuses),
+        )
+    return result
 
 
 def _validate_create(body: CaseCreate, category: Mapping[str, Any] | None, phone_only: bool) -> None:
@@ -147,6 +165,11 @@ def create_case(
         created_by=actor,
     )
     db.add(row)
+    db.flush()
+    audit.record(
+        db, "case.create", format_case_id(row.id), actor=actor, case_pk=row.id,
+        detail={"receipt_no": row.receipt_no, "category": row.category, "unit_count": row.unit_count},
+    )
     db.commit()
     return to_case(row, build_units(category, row.unit_count, {}))
 
@@ -155,7 +178,7 @@ def get_case(db: Session, case_id: str, category_lookup: CategoryLookup) -> Case
     row = db.get(CaseRow, parse_case_id(case_id))
     if row is None:
         raise not_found("접수 건을 찾을 수 없습니다.")
-    units = build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, row))
+    units = build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, [row.id])[row.id])
     return to_case(row, units)
 
 
@@ -182,9 +205,37 @@ def list_cases(
     rows = list(db.scalars(stmt.limit(limit + 1)))
     has_more = len(rows) > limit
     rows = rows[:limit]
+    slots = _photo_slots(db, [row.id for row in rows])
     items = [
-        to_summary(row, build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, row)))
+        to_summary(row, build_units(category_lookup(row.category), row.unit_count, slots[row.id]))
         for row in rows
     ]
     next_cursor = format_case_id(rows[-1].id) if has_more and rows else None
     return items, next_cursor
+
+
+def reopen_case(db: Session, case_id: str, reason: str, category_lookup: CategoryLookup, *, actor: str) -> Case:
+    """완료 건을 다시 연다 (관리 화면). 사유는 필수이고 `case_reopens`에 이력으로 남는다."""
+    pk = parse_case_id(case_id)
+    reason = reason.strip()
+    if problem := ("다시 여는 사유를 적어야 합니다." if not reason else text_problem(reason)):
+        raise validation_error({"reason": problem})
+    now = local_now()
+    try:
+        # 조건부 UPDATE 한 번으로 상태를 바꿔 동시에 두 번 열어도 이력이 한 번만 남게 한다
+        reopened = db.execute(
+            update(CaseRow).where(CaseRow.id == pk, CaseRow.status == "completed").values(status="open", updated_at=now)
+        )
+        if reopened.rowcount != 1:
+            if db.get(CaseRow, pk) is None:
+                raise not_found("접수 건을 찾을 수 없습니다.")
+            # TODO(확인 필요): 이미 열린 건을 다시 열기 — 계약에 코드가 없어 400 VALIDATION
+            raise validation_error({"status": "완료된 건만 다시 열 수 있습니다."}, "이미 열려 있는 건입니다.")
+        db.add(CaseReopen(case_id=pk, reason=reason, reopened_by=actor, reopened_at=now))
+        audit.record(db, "case.reopen", case_id, actor=actor, case_pk=pk, detail={"reason": reason})
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    # TODO(#6): SSE case.updated 알림은 #6 병합 후 여기서 보낸다.
+    return get_case(db, case_id, category_lookup)

@@ -34,6 +34,7 @@ pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-read
 pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-selectors&subdirectory=selection"
 ```
 처음에는 `ktl_contract.fakes`의 가짜 모듈로 끝까지 동작시키는 것이 목표(관문 2).
+`ktl_readers`가 설치돼 있으면 그 `get_reader`를 쓰고(아직 없는 Reader는 가짜로 대체), 없으면 가짜 모듈을 쓴다. `KTL_MODULES=fake`면 항상 가짜 모듈.
 
 ## 실행
 
@@ -43,3 +44,4 @@ alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8765
 ```
 `categories.yaml`은 위 모듈 설치 위치(`src/ktl-contract/`)에서 읽는다. 다른 곳이면 `KTL_CATEGORIES_PATH`로 지정.
+가스·라돈 선별/병합(관리 API `/files` · `/merges`)은 `ktl_selectors`(없거나 등록 전이면 가짜 모듈)를 별도 프로세스에서 시간 제한을 두고 부른다.

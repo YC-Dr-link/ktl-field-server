@@ -6,6 +6,11 @@ from logging.config import fileConfig
 from alembic import context
 
 from app.models import Base, create_db_engine, load_settings
+import app.models.audit  # noqa: F401  (audit_log)
+import app.models.auth  # noqa: F401  (테이블을 metadata에 등록)
+import app.models.data  # noqa: F401  (data_files · merges)
+import app.models.exports  # noqa: F401  (exports)
+import app.models.photos  # noqa: F401  (photos · value_edits)
 
 config = context.config
 

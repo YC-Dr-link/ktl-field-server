@@ -16,6 +16,8 @@ dependencies = [
     "pydantic>=2.6.0",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0.0",
+    "segno>=1.6.0",
+    "pillow>=10.1.0",  # 회전 보정 사본 (REQ-B1-12) · 워터마크 사본 (ImageFont.load_default(size)는 10.1부터)
 ]
 
 [project.optional-dependencies]
