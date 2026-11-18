@@ -9,18 +9,23 @@ photo_values (사진 업무: 시료채취 · 먼지)
 merge_raw (가스 · 라돈: categories.yaml `export: [merge_raw]`)
 - `merge_id`로 고른 이 건의 끝난 병합 결과 표를 xlsm RAW 시트에 붙이는 배치 그대로 쓴다 (칼럼 · 행 순서 그대로).
 
+사진 묶음 (REQ-B1-13, `include_photos`) — photo_values만
+- zip = 값 파일 + `photos/`에 다시 찍기로 지우지 않은 사진의 워터마크 사본(JPEG). 원본은 읽기만 한다.
+- 열 수 없는 사진은 빼고 `photos_skipped.txt`에 저장 파일명을 적는다.
+
 - 파일은 요청 안에서 바로 만든다 (기기 수십 대 × 칼럼 수십 개라 금방 끝난다) → 응답 status는 `done`.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import csv
 from dataclasses import dataclass
 import io
 import logging
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, BinaryIO
+import zipfile
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,6 +40,7 @@ from app.services import audit
 from app.services.cases import CategoryLookup, format_case_id, parse_case_id
 from app.services.merges import merge_raw_table
 from app.services.values import CONFIRMED
+from app.services.watermark import UNREADABLE, watermarked_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +213,8 @@ def _validate(body: ExportCreate, category: Mapping[str, Any] | None) -> list[st
     fields: dict[str, str] = {}
     if body.format == "xlsx":
         fields["format"] = "xlsx는 아직 지원하지 않습니다. csv 또는 txt를 쓰세요."  # TODO(확인 필요): xlsx 담당 이슈
-    if body.include_photos:
-        fields["include_photos"] = "사진 묶음(zip)은 아직 지원하지 않습니다."  # TODO(#14): 워터마크 사진 zip
+    if body.include_photos and body.kind != "photo_values":
+        fields["include_photos"] = "사진 묶음(zip)은 사진 업무(photo_values)만 만들 수 있습니다."
     category = category or {}
     export_spec = [str(c) for c in category.get("export") or []]
     is_merge_category = MERGE_RAW in export_spec
@@ -226,17 +232,46 @@ def _validate(body: ExportCreate, category: Mapping[str, Any] | None) -> list[st
     return export_spec
 
 
-def _write_new(target_dir: Path, base_name: str, ext: str, data: bytes) -> Path:
-    """같은 이름이 있으면 `_2`, `_3` …을 붙여 새 파일로 쓴다 (이전 내보내기 파일을 덮어쓰지 않게)."""
+def _watermark_text(receipt_no: str, photo: PhotoRow) -> str:
+    # TODO(확인 필요): 제출용 워터마크에 넣을 문구 · 위치 — 지금은 접수번호 · 기기 번호 · 항목 key · 올린 시각 (ASCII만)
+    return f"{receipt_no}  #{photo.unit_index} {photo.item_key}  {photo.uploaded_at:%Y-%m-%d %H:%M}"
+
+
+def _write_zip(
+    out: BinaryIO, storage_dir: Path, receipt_no: str, values_name: str, values: bytes, photos: Sequence[PhotoRow]
+) -> None:
+    skipped: list[str] = []
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr(values_name, values, compress_type=zipfile.ZIP_DEFLATED)
+        for photo in photos:
+            try:
+                jpeg = watermarked_jpeg(storage_dir / photo.original_path, _watermark_text(receipt_no, photo))
+            except UNREADABLE:
+                logger.warning("워터마크 사본을 못 만든 사진: %s", photo.stored_name, exc_info=True)
+                skipped.append(photo.stored_name)
+                continue
+            zf.writestr(f"photos/{Path(photo.stored_name).stem}.jpg", jpeg)  # JPEG은 이미 압축돼 있어 그대로 담는다
+        if skipped:
+            note = "\r\n".join(["워터마크 사본을 만들지 못해 빠진 사진 (원본은 서버에 그대로 있음)", *skipped])
+            zf.writestr("photos_skipped.txt", note.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
+
+
+def _write_new(target_dir: Path, base_name: str, ext: str, write: Callable[[BinaryIO], None]) -> Path:
+    """같은 이름이 있으면 `_2`, `_3` …을 붙여 새 파일로 쓴다 (이전 내보내기 파일을 덮어쓰지 않게). 쓰다 실패하면 지운다."""
     target_dir.mkdir(parents=True, exist_ok=True)
     for n in range(1, 1000):
         path = target_dir / (f"{base_name}{ext}" if n == 1 else f"{base_name}_{n}{ext}")
         try:
-            with open(path, "xb") as out:
-                out.write(data)
-            return path
+            out = open(path, "xb")
         except FileExistsError:
             continue
+        try:
+            with out:
+                write(out)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
     raise RuntimeError("내보내기 파일 이름을 정하지 못했습니다")
 
 
@@ -255,6 +290,7 @@ def create_export(
     export_spec = _validate(body, category_lookup(case.category))
 
     merge_pk: int | None = None
+    photos: Sequence[PhotoRow] = []
     if body.kind == MERGE_RAW:
         merge_pk, raw = merge_raw_table(db, case.id, body.merge_id or "")  # 빈 값은 _validate에서 400
         table = build_merge_table(raw)
@@ -268,7 +304,11 @@ def create_export(
 
     now = local_now()
     base_name = f"{case.receipt_no}_{_UNSAFE_NAME.sub('_', case.category)}_{now:%Y%m%d-%H%M%S}"
-    path = _write_new(storage_dir / "exports" / format_case_id(case.id), base_name, f".{body.format}", data)
+    values_name = f"{base_name}.{body.format}"
+    ext, write = f".{body.format}", lambda out: out.write(data)
+    if body.include_photos:
+        ext, write = ".zip", lambda out: _write_zip(out, storage_dir, case.receipt_no, values_name, data, photos)
+    path = _write_new(storage_dir / "exports" / format_case_id(case.id), base_name, ext, write)
     row = ExportRow(
         case_id=case.id,
         kind=body.kind,
