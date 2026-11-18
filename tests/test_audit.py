@@ -73,10 +73,10 @@ def test_tampered_middle_row_with_recomputed_hash_breaks_chain(env, tmp_path: Pa
             "SELECT seq, at, actor, action, target, case_id, prev_hash FROM audit_log ORDER BY seq LIMIT 1 OFFSET 2"
         ).fetchone()
         forged = AuditLog(seq=seq, at=at, actor=actor, action=action, target=target, case_id=case_pk,
-                          detail={"receipt_no": "99-999999-99"}, prev_hash=prev)
+                          detail={"receipt_no": "26-000999-99"}, prev_hash=prev)
         conn.execute(
             "UPDATE audit_log SET detail = ?, hash = ? WHERE seq = ?",
-            ('{"receipt_no": "99-999999-99"}', entry_hash(forged), seq),
+            ('{"receipt_no": "26-000999-99"}', entry_hash(forged), seq),
         )
     assert _audit(admin)["chain_ok"] is False
 
